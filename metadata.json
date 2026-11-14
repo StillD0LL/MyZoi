@@ -1,0 +1,6 @@
+{
+  "name": "Codex Noctis — Original Character & World Archive",
+  "description": "Personal original character and location encyclopedia with interactive portrait cropping, customizable profile layouts, bidirectional hyperlinking, and Google Drive cloud sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
