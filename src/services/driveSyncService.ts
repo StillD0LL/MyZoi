@@ -1,4 +1,4 @@
-import { initializeApp, getApps } from 'firebase/app';
+import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
@@ -7,6 +7,7 @@ import {
   setPersistence,
   browserLocalPersistence,
   User,
+  type Auth,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CodexArchive } from '../types/codex';
@@ -19,13 +20,23 @@ import { devLogger } from '../../dev/logger';
 
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
-
-// Explicitly enable browserLocalPersistence so user logins are remembered across reloads and site updates
-void setPersistence(auth, browserLocalPersistence).catch(() => {
-  // Ignore in environments where persistence is already locked
-});
+let app: FirebaseApp | null = null;
+let auth: Auth | null = null;
+try {
+  if (firebaseConfig && firebaseConfig.apiKey) {
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    auth = getAuth(app);
+    // Explicitly enable browserLocalPersistence so user logins are remembered across reloads and site updates
+    void setPersistence(auth, browserLocalPersistence).catch(() => {
+      // Ignore in environments where persistence is already locked
+    });
+  }
+} catch (err) {
+  devLogger.warn(
+    'Firebase initialization skipped or unavailable on this host',
+    String(err)
+  );
+}
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => provider.addScope(scope));
@@ -142,6 +153,10 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: (user: User | null) => void
 ) => {
+  if (!auth) {
+    if (onAuthFailure) onAuthFailure(null);
+    return () => {};
+  }
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
       rememberedLoginHint = user.email || null;
@@ -177,6 +192,9 @@ export const googleSignIn = async (
   user: User;
   accessToken: string;
 } | null> => {
+  if (!auth) {
+    throw new Error('Firebase authentication is not configured on this host.');
+  }
   try {
     isSigningIn = true;
     const hint = loginHintEmail || rememberedLoginHint || auth.currentUser?.email;
@@ -216,7 +234,7 @@ export const googleSignIn = async (
 
 export const getAccessToken = async (): Promise<string | null> => {
   if (cachedAccessToken) return cachedAccessToken;
-  if (auth.currentUser) {
+  if (auth?.currentUser) {
     const restored = await loadIndexedDbOAuthSession(auth.currentUser.uid);
     if (restored) {
       cachedAccessToken = restored;
@@ -227,7 +245,9 @@ export const getAccessToken = async (): Promise<string | null> => {
 };
 
 export const logout = async (): Promise<void> => {
-  await auth.signOut();
+  if (auth) {
+    await auth.signOut();
+  }
   cachedAccessToken = null;
   rememberedLoginHint = null;
   await saveIndexedDbOAuthSession(null);

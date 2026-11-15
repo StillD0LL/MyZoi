@@ -12,7 +12,9 @@ import {
   findBacklinksForEntity,
   formatRelationshipDisplay,
   formatSocialHandle,
+  getPersonalityTraitMeta,
   getSocialPostsForEntity,
+  parsePersonalityTraits,
 } from '../utils/codexLogic';
 import { HyperlinkedText } from './HyperlinkedText';
 import { SectionRenderer } from './SectionRenderer';
@@ -51,6 +53,13 @@ interface CharacterProfileViewProps {
     rawBackgroundDataUrl?: string,
     backgroundCropConfig?: ImageCropConfig
   ) => void;
+  onUpdateCharacterSocialBanner: (
+    characterId: string,
+    socialBannerDataUrl: string,
+    rawSocialBannerDataUrl?: string,
+    socialBannerCropConfig?: ImageCropConfig
+  ) => void;
+  onTriggerNaturalFollow?: (preferredZoiId?: string) => void;
   onOpenPhotoUpload: (characterId: string) => void;
   onUpdatePhoto: (photo: GalleryPhoto) => void;
   onDeletePhotoRequest: (photo: GalleryPhoto) => void;
@@ -88,6 +97,8 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
   onEdit,
   onDeleteRequest,
   onUpdateCharacterBackground,
+  onUpdateCharacterSocialBanner,
+  onTriggerNaturalFollow,
   onOpenPhotoUpload,
   onUpdatePhoto,
   onDeletePhotoRequest,
@@ -102,9 +113,10 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
   onTriggerAiSocial,
   onNavigate,
 }) => {
+  // Primary page is the Zoi's Social Feed ('social'), Encyclopedia Dossier is the 2nd page ('dossier')
   const [activeProfileView, setActiveProfileView] = useState<
-    'dossier' | 'social'
-  >('dossier');
+    'social' | 'dossier'
+  >('social');
   const [isBgCropperOpen, setIsBgCropperOpen] = useState(false);
 
   const backlinks = useMemo(
@@ -123,6 +135,11 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
     [character.id, socialPosts]
   );
 
+  const personalityTags = useMemo(
+    () => parsePersonalityTraits(character.personality),
+    [character.personality]
+  );
+
   const genderValue = character.gender || character.species || '';
   const relationshipDisplay = formatRelationshipDisplay(
     character.relationshipStatus,
@@ -130,8 +147,10 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
     character.relationships
   );
 
-  const corePersonalRows = useMemo(() => {
-    const base: Array<{ label: string; value: string }> = [
+  const corePersonalRows = useMemo<
+    Array<{ label: string; value: string; isTraits?: boolean }>
+  >(() => {
+    const base: Array<{ label: string; value: string; isTraits?: boolean }> = [
       { label: 'Status', value: character.status || 'Alive' },
       { label: 'Gender', value: genderValue },
       { label: 'Pronouns', value: character.pronouns },
@@ -142,7 +161,11 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
       { label: 'Relationship Status', value: relationshipDisplay },
       { label: 'Occupation / Life Path', value: character.occupation },
       { label: 'Role / Archetype', value: character.role },
-      { label: 'Personality / Traits', value: character.personality },
+      {
+        label: 'Personality / Traits',
+        value: character.personality,
+        isTraits: true,
+      },
       { label: 'Ambition / Desire', value: character.ambition },
       { label: 'Affiliation / Household', value: character.affiliation },
       { label: 'Primary Location', value: character.originLocation },
@@ -205,26 +228,12 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
             <span>Back to Zois</span>
           </button>
 
-          {/* Encyclopedia Dossier vs Twitter/X Social Feed Switcher */}
+          {/* 1st Page: Social Feed (X) | 2nd Page: Encyclopedia Dossier */}
           <div
             className="flex items-center border border-white/[0.14] bg-black/70 backdrop-blur-md p-0.5"
             role="tablist"
             aria-label="Zoi Entry Page Mode"
           >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeProfileView === 'dossier'}
-              onClick={() => setActiveProfileView('dossier')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                activeProfileView === 'dossier'
-                  ? 'bg-[#2DD4BF] text-[#050608] font-semibold'
-                  : 'text-[#94A3B8] hover:text-white'
-              }`}
-            >
-              <BookOpen className="h-3.5 w-3.5" />
-              <span>Encyclopedia Dossier</span>
-            </button>
             <button
               type="button"
               role="tab"
@@ -241,6 +250,20 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
                 Social Feed (X) · {formatSocialHandle(character.name)} (
                 {entitySocialPosts.length})
               </span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeProfileView === 'dossier'}
+              onClick={() => setActiveProfileView('dossier')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                activeProfileView === 'dossier'
+                  ? 'bg-[#2DD4BF] text-[#050608] font-semibold'
+                  : 'text-[#94A3B8] hover:text-white'
+              }`}
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              <span>Encyclopedia Dossier</span>
             </button>
           </div>
         </div>
@@ -307,7 +330,7 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
         </div>
       </div>
 
-      {/* TWITTER/X-INSPIRED SOCIAL MEDIA PAGE FOR THIS ZOI */}
+      {/* 1ST PAGE (PRIMARY): TWITTER/X-INSPIRED SOCIAL MEDIA PAGE FOR THIS ZOI */}
       {activeProfileView === 'social' ? (
         <SocialFeedView
           entityType="character"
@@ -328,10 +351,20 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
           onAddReply={onAddSocialReply}
           onDeleteReply={onDeleteSocialReply}
           onTriggerAiSocial={onTriggerAiSocial}
+          onUpdateSocialBanner={(bannerUrl, rawBannerUrl, bannerCfg) =>
+            onUpdateCharacterSocialBanner(
+              character.id,
+              bannerUrl,
+              rawBannerUrl,
+              bannerCfg
+            )
+          }
+          onTriggerNaturalFollow={onTriggerNaturalFollow}
           onNavigate={onNavigate}
+          onOpenDossier={() => setActiveProfileView('dossier')}
         />
       ) : (
-        /* MAIN & ONLY PROFILE DESIGN: ENCYCLOPEDIA DOSSIER — inZOI Wiki Article + Infobox */
+        /* 2ND PAGE: ENCYCLOPEDIA DOSSIER — inZOI Wiki Article + Infobox */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Main Encyclopedia Article Column */}
           <div className="lg:col-span-8 space-y-8 order-2 lg:order-1 inzoi-glass-panel p-6 sm:p-8">
@@ -404,7 +437,7 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
                       </span>
                       <a
                         href={`#section-${sec.id}`}
-                        className="hover:text-white transition-colors"
+                        className="text-[#38BDF8] hover:text-[#60A5FA] transition-colors"
                       >
                         {sec.title || 'Untitled Section'}
                       </a>
@@ -446,13 +479,13 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
             {/* Backlinks Footer */}
             <div className="mt-10 border-t border-white/[0.10] pt-6">
               <h3 className="font-display text-sm font-semibold text-white mb-3 flex items-center gap-2">
-                <Link2 className="h-4 w-4 text-[#2DD4BF]" />
+                <Link2 className="h-4 w-4 text-[#38BDF8]" />
                 <span>Referenced In ({backlinks.length})</span>
               </h3>
               {backlinks.length === 0 ? (
                 <p className="text-xs text-[#94A3B8]">
                   No other Zois or locations reference {character.name} yet. Use{' '}
-                  <code className="font-mono-tabular text-[#2DD4BF]">
+                  <code className="font-mono-tabular text-[#38BDF8]">
                     [[{character.name}]]
                   </code>{' '}
                   in any entry to link here.
@@ -466,16 +499,16 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
                       onClick={() =>
                         onNavigate(item.sourceType, item.sourceId)
                       }
-                      className="flex items-start justify-between inzoi-glass-card p-3.5 text-left hover:border-[#2DD4BF] transition-all group"
+                      className="flex items-start justify-between inzoi-glass-card p-3.5 text-left hover:border-[#38BDF8] transition-all group"
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           {item.sourceType === 'character' ? (
-                            <User className="h-3.5 w-3.5 text-[#2DD4BF] shrink-0" />
+                            <User className="h-3.5 w-3.5 text-[#38BDF8] shrink-0" />
                           ) : (
-                            <MapPin className="h-3.5 w-3.5 text-[#2DD4BF] shrink-0" />
+                            <MapPin className="h-3.5 w-3.5 text-[#38BDF8] shrink-0" />
                           )}
-                          <span className="font-display text-sm font-semibold text-white group-hover:text-[#2DD4BF] truncate">
+                          <span className="font-display text-sm font-semibold text-[#38BDF8] group-hover:text-[#60A5FA] underline decoration-[#38BDF8]/50 truncate">
                             {item.sourceName}
                           </span>
                         </div>
@@ -537,15 +570,41 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
                         {row.label}
                       </dt>
                       <dd className="col-span-7 text-white font-mono-tabular">
-                        <HyperlinkedText
-                          text={row.value}
-                          characters={characters}
-                          locations={locations}
-                          autoHyperlinkNames={autoHyperlinkNames}
-                          showLinkPreviews={showLinkPreviews}
-                          excludeEntityId={character.id}
-                          onNavigate={onNavigate}
-                        />
+                        {row.isTraits && personalityTags.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {personalityTags.map((tag) => {
+                              const meta = getPersonalityTraitMeta(tag);
+                              const badgeColor =
+                                meta.category === 'positive'
+                                  ? 'border-[#2DD4BF]/50 bg-[#2DD4BF]/12 text-[#5EEAD4]'
+                                  : meta.category === 'negative'
+                                    ? 'border-[#F87171]/50 bg-[#F87171]/12 text-[#FCA5A5]'
+                                    : meta.category === 'innocent'
+                                      ? 'border-[#38BDF8]/50 bg-[#38BDF8]/12 text-[#7DD3FC]'
+                                      : meta.category === 'suggestive'
+                                        ? 'border-[#C084FC]/50 bg-[#C084FC]/12 text-[#D8B4FE]'
+                                        : 'border-white/[0.18] bg-white/[0.06] text-[#E2E8F0]';
+                              return (
+                                <span
+                                  key={tag}
+                                  className={`inline-block border px-1.5 py-0.5 text-[11px] font-medium ${badgeColor}`}
+                                >
+                                  {tag}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <HyperlinkedText
+                            text={row.value}
+                            characters={characters}
+                            locations={locations}
+                            autoHyperlinkNames={autoHyperlinkNames}
+                            showLinkPreviews={showLinkPreviews}
+                            excludeEntityId={character.id}
+                            onNavigate={onNavigate}
+                          />
+                        )}
                       </dd>
                     </div>
                   ))}
@@ -579,3 +638,4 @@ export const CharacterProfileView: React.FC<CharacterProfileViewProps> = ({
     </div>
   );
 };
+

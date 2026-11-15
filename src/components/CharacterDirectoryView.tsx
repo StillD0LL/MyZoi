@@ -1,7 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { CharacterEntry } from '../types/codex';
+import { CharacterEntry, CharacterSortOption } from '../types/codex';
+import {
+  getFollowersForZoi,
+  sortCharactersForDirectory,
+} from '../utils/codexLogic';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import {
+  ArrowUpDown,
   Cloud,
   Crop,
   Link2,
@@ -9,6 +14,7 @@ import {
   Plus,
   Search,
   User,
+  Users,
 } from 'lucide-react';
 
 interface CharacterDirectoryViewProps {
@@ -21,6 +27,19 @@ interface CharacterDirectoryViewProps {
   onGoogleLogin: () => void;
 }
 
+const CHARACTER_SORT_OPTIONS: Array<{
+  value: CharacterSortOption;
+  label: string;
+}> = [
+  { value: 'recent', label: 'Sort: Recently Updated' },
+  { value: 'created_desc', label: 'Sort: Newest Added' },
+  { value: 'name_asc', label: 'Sort: Name (A → Z)' },
+  { value: 'name_desc', label: 'Sort: Name (Z → A)' },
+  { value: 'age_asc', label: 'Sort: Age Stage' },
+  { value: 'affiliation_asc', label: 'Sort: Affiliation / Household' },
+  { value: 'followers_desc', label: 'Sort: Most Followers' },
+];
+
 export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
   characters,
   gridColumns,
@@ -32,6 +51,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
 }) => {
   const [filterQuery, setFilterQuery] = useState('');
   const [activeAffiliation, setActiveAffiliation] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<CharacterSortOption>('recent');
 
   const affiliations = useMemo(() => {
     const set = new Set<string>();
@@ -43,9 +63,9 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
     return Array.from(set).sort();
   }, [characters]);
 
-  const filteredCharacters = useMemo(() => {
+  const sortedAndFilteredCharacters = useMemo(() => {
     const q = filterQuery.trim().toLowerCase();
-    return characters.filter((c) => {
+    const filtered = characters.filter((c) => {
       if (
         activeAffiliation !== 'all' &&
         c.affiliation.trim() !== activeAffiliation
@@ -62,7 +82,8 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
         c.affiliation.toLowerCase().includes(q)
       );
     });
-  }, [characters, filterQuery, activeAffiliation]);
+    return sortCharactersForDirectory(filtered, sortBy);
+  }, [characters, filterQuery, activeAffiliation, sortBy]);
 
   if (characters.length === 0) {
     return (
@@ -136,7 +157,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                   <p className="mt-1 text-xs text-[#94A3B8] leading-relaxed">
                     Every Zoi and Location features a Wikipedia-style
                     Encyclopedia Dossier plus an X-inspired social media page
-                    with comments and threaded replies.
+                    with automatic comments, replies, and follower connections.
                   </p>
                 </div>
               </div>
@@ -150,7 +171,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                   <p className="mt-1 text-xs text-[#94A3B8] leading-relaxed">
                     Cross-reference Zois, partners, and locations effortlessly
                     using{' '}
-                    <code className="font-mono-tabular text-[#2DD4BF]">
+                    <code className="font-mono-tabular text-[#38BDF8]">
                       [[Entry Name]]
                     </code>{' '}
                     or automatic entity recognition.
@@ -179,7 +200,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Directory Header & Filter Bar */}
+      {/* Directory Header, Sort Selector & Filter Bar */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/[0.11] pb-5">
         <div>
           <div className="text-xs text-[#2DD4BF] font-semibold uppercase tracking-wider mb-1">
@@ -192,6 +213,23 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Sorting Dropdown (Entries without uploaded profile images automatically move to bottom) */}
+          <div className="relative flex items-center">
+            <ArrowUpDown className="h-3.5 w-3.5 text-[#2DD4BF] absolute left-3 pointer-events-none" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as CharacterSortOption)}
+              aria-label="Sort Zoi entries"
+              className="border border-white/[0.14] bg-black/75 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white focus:border-[#2DD4BF] focus:outline-none"
+            >
+              {CHARACTER_SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="relative">
             <Search className="h-3.5 w-3.5 text-[#94A3B8] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -200,7 +238,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
               onChange={(e) => setFilterQuery(e.target.value)}
               placeholder="Filter Zoi roster..."
               aria-label="Filter Zoi roster"
-              className="border border-white/[0.14] bg-black/65 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none w-48 sm:w-60"
+              className="border border-white/[0.14] bg-black/65 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none w-48 sm:w-56"
             />
           </div>
 
@@ -252,7 +290,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
           gridColumns === 4 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'
         } gap-6`}
       >
-        {filteredCharacters.map((char) => {
+        {sortedAndFilteredCharacters.map((char) => {
           const initials =
             char.name
               .split(/\s+/)
@@ -260,6 +298,8 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
               .join('')
               .slice(0, 2)
               .toUpperCase() || 'Z';
+          const followersCount = getFollowersForZoi(char.id, characters).length;
+          const followingCount = (char.followingIds || []).length;
 
           return (
             <button
@@ -283,6 +323,9 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                       {initials}
                     </div>
                     <User className="mt-3 h-4 w-4 text-[#475569]" />
+                    <span className="mt-1.5 text-[10px] font-mono-tabular text-[#64748B]">
+                      No Portrait Uploaded
+                    </span>
                   </div>
                 )}
 
@@ -298,7 +341,7 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                 </div>
               </div>
 
-              {/* Clean Unboxed Metadata Footer (Zero-Pill Discipline) */}
+              {/* Clean Unboxed Metadata Footer */}
               <div className="p-4 space-y-2 flex-1 flex flex-col justify-between">
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#94A3B8]">
                   <span>{char.occupation || char.role || 'Zoi'}</span>
@@ -306,6 +349,12 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                     <>
                       <span aria-hidden="true">·</span>
                       <span>{char.gender || char.species}</span>
+                    </>
+                  )}
+                  {char.age && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>{char.age}</span>
                     </>
                   )}
                   {char.status && (
@@ -323,7 +372,12 @@ export const CharacterDirectoryView: React.FC<CharacterDirectoryViewProps> = ({
                 )}
 
                 <div className="pt-2 border-t border-white/[0.08] flex items-center justify-between text-[11px] text-[#64748B] font-mono-tabular">
-                  <span>Encyclopedia Dossier</span>
+                  <span className="inline-flex items-center gap-1 text-[#94A3B8]">
+                    <Users className="h-3 w-3 text-[#2DD4BF]" />
+                    <span>
+                      {followersCount} Followers · {followingCount} Following
+                    </span>
+                  </span>
                   <span>{char.sections.length} Sections</span>
                 </div>
               </div>

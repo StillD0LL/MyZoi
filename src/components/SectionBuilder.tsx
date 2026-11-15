@@ -17,6 +17,7 @@ import {
   List,
   Plus,
   Quote,
+  Sparkles,
   Table2,
   Trash2,
 } from 'lucide-react';
@@ -27,6 +28,12 @@ interface SectionBuilderProps {
   characters: CharacterEntry[];
   locations: LocationEntry[];
   currentEntityId?: string;
+  entityType?: 'character' | 'location';
+  entityName?: string;
+  entityRoleOrSubtitle?: string;
+  entityPersonality?: string;
+  aiCooldownRemainingSec?: number;
+  onAiCooldownStarted?: (cooldownSeconds: number) => void;
 }
 
 const SECTION_TYPE_META: Array<{
@@ -50,7 +57,7 @@ const SECTION_TYPE_META: Array<{
   {
     type: 'bullets',
     label: 'Bullet Point Section',
-    defaultTitle: 'Abilities & Equipment',
+    defaultTitle: 'Abilities & Lifestyle',
     icon: List,
   },
   {
@@ -62,7 +69,7 @@ const SECTION_TYPE_META: Array<{
   {
     type: 'trivia',
     label: 'Trivia & Notes',
-    defaultTitle: 'Character Trivia',
+    defaultTitle: 'Zoi Trivia',
     icon: HelpCircle,
   },
 ];
@@ -73,15 +80,27 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
   characters,
   locations,
   currentEntityId,
+  entityType = 'character',
+  entityName = '',
+  entityRoleOrSubtitle = '',
+  entityPersonality = '',
+  aiCooldownRemainingSec = 0,
+  onAiCooldownStarted,
 }) => {
   const [activeLinkPickerSectionId, setActiveLinkPickerSectionId] = useState<
     string | null
   >(null);
+  const [sectionPrompts, setSectionPrompts] = useState<Record<string, string>>(
+    {}
+  );
+  const [generatingSectionId, setGeneratingSectionId] = useState<string | null>(
+    null
+  );
 
   const linkableEntities = [
     ...characters
       .filter((c) => c.id !== currentEntityId)
-      .map((c) => ({ id: c.id, name: c.name, kind: 'Character' })),
+      .map((c) => ({ id: c.id, name: c.name, kind: 'Zoi' })),
     ...locations
       .filter((l) => l.id !== currentEntityId)
       .map((l) => ({ id: l.id, name: l.name, kind: 'Location' })),
@@ -139,8 +158,8 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
     onChange(copy);
   };
 
-  const handleAppendLinkToSection = (sec: ProfileSection, entityName: string) => {
-    const token = formatEntityLinkToken(entityName);
+  const handleAppendLinkToSection = (sec: ProfileSection, targetName: string) => {
+    const token = formatEntityLinkToken(targetName);
     if (sec.type === 'paragraph' || sec.type === 'quote') {
       const nextContent = sec.content
         ? `${sec.content} ${token}`
@@ -169,7 +188,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
       if (bullets.length === 0) {
         bullets.push({
           id: `bl-${Date.now()}`,
-          title: entityName,
+          title: targetName,
           content: token,
         });
       } else {
@@ -186,17 +205,128 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
     setActiveLinkPickerSectionId(null);
   };
 
+  const checkSectionHasExistingContent = (sec: ProfileSection): boolean => {
+    if (sec.type === 'paragraph' || sec.type === 'quote') {
+      return Boolean(sec.content && sec.content.trim().length > 0);
+    }
+    if (sec.type === 'infobox') {
+      return Boolean(
+        sec.items &&
+          sec.items.some((i) => i.label.trim().length > 0 || i.value.trim().length > 0)
+      );
+    }
+    if (sec.type === 'bullets' || sec.type === 'trivia') {
+      return Boolean(
+        sec.bullets &&
+          sec.bullets.some(
+            (b) => b.title.trim().length > 0 || b.content.trim().length > 0
+          )
+      );
+    }
+    return false;
+  };
+
+  const handleAiFillOrImproveSection = async (sec: ProfileSection) => {
+    if (generatingSectionId || aiCooldownRemainingSec > 0) return;
+
+    const userPrompt = (sectionPrompts[sec.id] || '').trim();
+    setGeneratingSectionId(sec.id);
+
+    try {
+      const response = await fetch('/api/section/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityType,
+          entityName: entityName || 'Zoi',
+          entityRoleOrSubtitle,
+          entityPersonality,
+          targetType: sec.type,
+          sectionTitle: sec.title,
+          userPrompt:
+            userPrompt ||
+            `Write or improve the "${sec.title}" section with authentic inZOI details`,
+          existingContent: sec.content,
+          existingAttribution: sec.attribution,
+          existingItems: sec.items,
+          existingBullets: sec.bullets,
+          existingCharacters: characters.map((c) => c.name),
+          existingLocations: locations.map((l) => l.name),
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (data?.cooldownActive) {
+        onAiCooldownStarted?.(
+          typeof data.cooldownRemainingSeconds === 'number'
+            ? data.cooldownRemainingSeconds
+            : 15
+        );
+        return;
+      }
+
+      const result = data?.result;
+      if (result) {
+        if (sec.type === 'paragraph' && typeof result.content === 'string') {
+          handleUpdateSection(sec.id, { content: result.content.trim() });
+        } else if (sec.type === 'quote') {
+          handleUpdateSection(sec.id, {
+            content:
+              typeof result.content === 'string'
+                ? result.content.trim().replace(/^["']|["']$/g, '')
+                : sec.content,
+            attribution:
+              typeof result.attribution === 'string'
+                ? result.attribution.trim()
+                : sec.attribution,
+          });
+        } else if (sec.type === 'infobox' && Array.isArray(result.items)) {
+          const nextItems: KeyValueItem[] = result.items.map(
+            (item: { label?: string; value?: string }, idx: number) => ({
+              id: `kv-ai-${Date.now()}-${idx}`,
+              label: (item.label || '').trim(),
+              value: (item.value || '').trim(),
+            })
+          );
+          if (nextItems.length > 0) {
+            handleUpdateSection(sec.id, { items: nextItems });
+          }
+        } else if (
+          (sec.type === 'bullets' || sec.type === 'trivia') &&
+          Array.isArray(result.bullets)
+        ) {
+          const nextBullets: BulletItem[] = result.bullets.map(
+            (b: { title?: string; content?: string }, idx: number) => ({
+              id: `bl-ai-${Date.now()}-${idx}`,
+              title: (b.title || '').trim(),
+              content: (b.content || '').trim(),
+            })
+          );
+          if (nextBullets.length > 0) {
+            handleUpdateSection(sec.id, { bullets: nextBullets });
+          }
+        }
+      }
+
+      onAiCooldownStarted?.(
+        typeof data?.cooldownSeconds === 'number' ? data.cooldownSeconds : 15
+      );
+    } finally {
+      setGeneratingSectionId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Add Section Toolbar */}
-      <div className="border border-[#233044] bg-[#111722] p-4">
+      <div className="inzoi-glass-panel p-5">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h3 className="font-display text-sm font-semibold text-[#F3F4F6]">
-            Modular Profile Sections
+            Modular Encyclopedia Dossier Sections
           </h3>
           <span className="text-xs text-[#9CA3AF]">
-            Tip: Wrap any character or location name in{' '}
-            <code className="font-mono-tabular text-[#2DD4BF]">
+            Tip: Wrap any Zoi or location name in{' '}
+            <code className="font-mono-tabular text-[#38BDF8]">
               [[Entry Name]]
             </code>{' '}
             to hyperlink it.
@@ -210,7 +340,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                 key={meta.type}
                 type="button"
                 onClick={() => handleAddSection(meta.type)}
-                className="inline-flex items-center gap-2 border border-[#2C3B52] bg-[#162030] px-3 py-2 text-xs font-medium text-[#E5E7EB] hover:border-[#2DD4BF] hover:text-white transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-2 border border-white/[0.14] bg-white/[0.04] px-3 py-2 text-xs font-medium text-[#E5E7EB] hover:border-[#2DD4BF] hover:text-white transition-colors whitespace-nowrap shrink-0"
               >
                 <Plus className="h-3.5 w-3.5 text-[#2DD4BF]" />
                 <Icon className="h-3.5 w-3.5 text-[#9CA3AF]" />
@@ -223,11 +353,11 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
 
       {/* Section Cards */}
       {sections.length === 0 ? (
-        <div className="border border-dashed border-[#233044] bg-[#0E1116] p-8 text-center">
+        <div className="border border-dashed border-white/[0.14] bg-black/55 p-8 text-center">
           <p className="text-sm text-[#9CA3AF]">
             No extra sections added yet. Choose a section type above (Quick
-            Status Info, Full Paragraph, Bullet Points, Quote, or Trivia) to
-            expand this profile.
+            Status Info, Full Paragraph, Bullet Points, Quote, or Trivia) or use
+            the AI Entry Generator above to populate sections automatically.
           </p>
         </div>
       ) : (
@@ -235,14 +365,16 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
           {sections.map((sec, idx) => {
             const meta = SECTION_TYPE_META.find((m) => m.type === sec.type);
             const Icon = meta?.icon || AlignLeft;
+            const hasExistingContent = checkSectionHasExistingContent(sec);
+            const isThisGenerating = generatingSectionId === sec.id;
 
             return (
               <div
                 key={sec.id}
-                className="border border-[#233044] bg-[#111722] p-5 space-y-4"
+                className="inzoi-glass-panel p-5 space-y-4"
               >
                 {/* Section Header Bar */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#233044] pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.10] pb-3">
                   <div className="flex items-center gap-2.5 flex-1 min-w-[220px]">
                     <Icon className="h-4 w-4 text-[#2DD4BF] shrink-0" />
                     <input
@@ -253,7 +385,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                       }
                       placeholder="Section Title"
                       aria-label={`Section ${idx + 1} title`}
-                      className="w-full border border-[#2C3B52] bg-[#090D14] px-3 py-1.5 text-sm font-semibold text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
+                      className="w-full border border-white/[0.14] bg-black/80 px-3 py-1.5 text-sm font-semibold text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
                     />
                   </div>
 
@@ -266,24 +398,24 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                           activeLinkPickerSectionId === sec.id ? null : sec.id
                         )
                       }
-                      className="inline-flex items-center gap-1.5 border border-[#2C3B52] bg-[#162030] px-2.5 py-1.5 text-xs font-medium text-[#D1D5DB] hover:border-[#2DD4BF] hover:text-white transition-colors whitespace-nowrap shrink-0"
-                      title="Insert hyperlink to an existing Character or Location"
+                      className="inline-flex items-center gap-1.5 border border-white/[0.14] bg-white/[0.04] px-2.5 py-1.5 text-xs font-medium text-[#38BDF8] hover:border-[#38BDF8] hover:text-[#60A5FA] transition-colors whitespace-nowrap shrink-0"
+                      title="Insert hyperlink to an existing Zoi or Location"
                     >
-                      <Link2 className="h-3.5 w-3.5 text-[#2DD4BF]" />
+                      <Link2 className="h-3.5 w-3.5 text-[#38BDF8]" />
                       <span>Insert Link</span>
                     </button>
 
                     {activeLinkPickerSectionId === sec.id && (
-                      <div className="absolute right-0 top-full mt-1 z-30 w-64 border border-[#2C3B52] bg-[#090D14] p-2 shadow-2xl">
-                        <p className="text-[11px] font-medium text-[#9CA3AF] px-2 py-1 border-b border-[#233044]">
+                      <div className="absolute right-0 top-full mt-1 z-30 w-64 border border-white/[0.16] bg-[#070B12] p-2 shadow-2xl">
+                        <p className="text-[11px] font-medium text-[#9CA3AF] px-2 py-1 border-b border-white/[0.10]">
                           Click entry to insert [[Link]]
                         </p>
                         {linkableEntities.length === 0 ? (
                           <p className="p-2 text-xs text-[#6B7280]">
-                            No other characters or locations created yet.
+                            No other Zois or locations created yet.
                           </p>
                         ) : (
-                          <div className="max-h-44 overflow-y-auto divide-y divide-[#181C24]">
+                          <div className="max-h-44 overflow-y-auto divide-y divide-white/[0.06]">
                             {linkableEntities.map((ent) => (
                               <button
                                 key={ent.id}
@@ -291,7 +423,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                                 onClick={() =>
                                   handleAppendLinkToSection(sec, ent.name)
                                 }
-                                className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-left text-[#E5E7EB] hover:bg-[#162030] hover:text-[#2DD4BF]"
+                                className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-left text-[#E5E7EB] hover:bg-white/[0.06] hover:text-[#38BDF8]"
                               >
                                 <span className="truncate">{ent.name}</span>
                                 <span className="text-[10px] text-[#9CA3AF] ml-2 shrink-0">
@@ -309,7 +441,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                       disabled={idx === 0}
                       onClick={() => handleMoveSection(idx, -1)}
                       aria-label={`Move section ${sec.title} up`}
-                      className="border border-[#2C3B52] bg-[#162030] p-1.5 text-[#9CA3AF] hover:text-white disabled:opacity-30"
+                      className="border border-white/[0.14] bg-white/[0.04] p-1.5 text-[#9CA3AF] hover:text-white disabled:opacity-30"
                     >
                       <ArrowUp className="h-3.5 w-3.5" />
                     </button>
@@ -318,7 +450,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                       disabled={idx === sections.length - 1}
                       onClick={() => handleMoveSection(idx, 1)}
                       aria-label={`Move section ${sec.title} down`}
-                      className="border border-[#2C3B52] bg-[#162030] p-1.5 text-[#9CA3AF] hover:text-white disabled:opacity-30"
+                      className="border border-white/[0.14] bg-white/[0.04] p-1.5 text-[#9CA3AF] hover:text-white disabled:opacity-30"
                     >
                       <ArrowDown className="h-3.5 w-3.5" />
                     </button>
@@ -326,9 +458,65 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                       type="button"
                       onClick={() => handleRemoveSection(sec.id)}
                       aria-label={`Delete section ${sec.title}`}
-                      className="border border-[#2C3B52] bg-[#162030] p-1.5 text-[#EF4444] hover:bg-[#EF4444]/15"
+                      className="border border-white/[0.14] bg-white/[0.04] p-1.5 text-[#EF4444] hover:bg-[#EF4444]/15"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* AI Prompt Assist Bar for this Section (Uses existing content as context if filled) */}
+                <div className="border border-[#2DD4BF]/30 bg-[#2DD4BF]/5 p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <span className="font-semibold text-[#2DD4BF] flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      <span>
+                        AI Section Assistant ({sec.title || meta?.label})
+                      </span>
+                    </span>
+                    <span className="font-mono-tabular text-[#94A3B8]">
+                      {hasExistingContent
+                        ? 'Context Active: Uses existing section text to edit & improve'
+                        : 'Empty Section: Generates fresh content from prompt'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={sectionPrompts[sec.id] || ''}
+                      onChange={(e) =>
+                        setSectionPrompts((prev) => ({
+                          ...prev,
+                          [sec.id]: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        hasExistingContent
+                          ? `How should AI edit or improve "${sec.title}"? (e.g. Make it more dramatic, add a rivalry...)`
+                          : `Prompt AI to write "${sec.title}" (e.g. Describe their secret midnight jazz performances...)`
+                      }
+                      aria-label={`AI prompt for section ${sec.title}`}
+                      className="flex-1 min-w-[220px] border border-white/[0.14] bg-black/80 px-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={
+                        Boolean(generatingSectionId) ||
+                        aiCooldownRemainingSec > 0
+                      }
+                      onClick={() => void handleAiFillOrImproveSection(sec)}
+                      className="inline-flex items-center gap-1.5 bg-[#2DD4BF] px-3.5 py-1.5 text-xs font-semibold text-[#050608] hover:bg-[#5EEAD4] disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      <span>
+                        {isThisGenerating
+                          ? 'AI Writing...'
+                          : aiCooldownRemainingSec > 0
+                            ? `Cooldown (${aiCooldownRemainingSec}s)`
+                            : hasExistingContent
+                              ? 'AI Edit / Improve Section'
+                              : 'AI Fill Section'}
+                      </span>
                     </button>
                   </div>
                 </div>
@@ -342,9 +530,9 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                       onChange={(e) =>
                         handleUpdateSection(sec.id, { content: e.target.value })
                       }
-                      placeholder="Write full narrative paragraphs here. Reference any character or location using [[Name]]..."
+                      placeholder="Write full narrative paragraphs here. Reference any Zoi or location using [[Name]]..."
                       aria-label={`${sec.title} content`}
-                      className="w-full border border-[#2C3B52] bg-[#090D14] p-3 text-sm text-[#E5E7EB] leading-relaxed focus:border-[#2DD4BF] focus:outline-none"
+                      className="w-full border border-white/[0.14] bg-black/80 p-3 text-sm text-[#E5E7EB] leading-relaxed focus:border-[#2DD4BF] focus:outline-none"
                     />
                   </div>
                 )}
@@ -363,9 +551,9 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             content: e.target.value,
                           })
                         }
-                        placeholder="Enter the character or location quotation..."
+                        placeholder="Enter the Zoi or location quotation..."
                         aria-label={`${sec.title} quote text`}
-                        className="w-full border border-[#2C3B52] bg-[#090D14] p-3 text-sm italic text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
+                        className="w-full border border-white/[0.14] bg-black/80 p-3 text-sm italic text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
                       />
                     </div>
                     <div>
@@ -380,9 +568,9 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             attribution: e.target.value,
                           })
                         }
-                        placeholder="e.g., Spoken to [[Character Name]] during the Fall of Aethelgard"
+                        placeholder="e.g., Spoken to [[Zoi Name]] at [[Dowon Plaza]]"
                         aria-label={`${sec.title} attribution`}
-                        className="w-full border border-[#2C3B52] bg-[#090D14] px-3 py-2 text-xs text-[#D1D5DB] focus:border-[#2DD4BF] focus:outline-none"
+                        className="w-full border border-white/[0.14] bg-black/80 px-3 py-2 text-xs text-[#D1D5DB] focus:border-[#2DD4BF] focus:outline-none"
                       />
                     </div>
                   </div>
@@ -403,9 +591,9 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             };
                             handleUpdateSection(sec.id, { items: next });
                           }}
-                          placeholder="Status Label (e.g. Alignment, Weapon)"
+                          placeholder="Status Label (e.g. Karma Standing, Specialty)"
                           aria-label={`${sec.title} row ${itemIdx + 1} label`}
-                          className="w-2/5 border border-[#2C3B52] bg-[#090D14] px-3 py-1.5 text-xs font-medium text-[#D1D5DB] focus:border-[#2DD4BF] focus:outline-none"
+                          className="w-2/5 border border-white/[0.14] bg-black/80 px-3 py-1.5 text-xs font-medium text-[#D1D5DB] focus:border-[#2DD4BF] focus:outline-none"
                         />
                         <input
                           type="text"
@@ -420,7 +608,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                           }}
                           placeholder="Value (supports [[Links]])"
                           aria-label={`${sec.title} row ${itemIdx + 1} value`}
-                          className="flex-1 border border-[#2C3B52] bg-[#090D14] px-3 py-1.5 text-xs text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
+                          className="flex-1 border border-white/[0.14] bg-black/80 px-3 py-1.5 text-xs text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
                         />
                         <button
                           type="button"
@@ -431,7 +619,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             handleUpdateSection(sec.id, { items: next });
                           }}
                           aria-label={`Remove status row ${itemIdx + 1}`}
-                          className="border border-[#2C3B52] bg-[#162030] p-1.5 text-[#9CA3AF] hover:text-[#EF4444]"
+                          className="border border-white/[0.14] bg-white/[0.04] p-1.5 text-[#9CA3AF] hover:text-[#EF4444]"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -450,7 +638,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                         ];
                         handleUpdateSection(sec.id, { items: next });
                       }}
-                      className="inline-flex items-center gap-1.5 border border-[#2C3B52] bg-[#162030] px-3 py-1.5 text-xs font-medium text-[#2DD4BF] hover:bg-[#1F2430] transition-colors"
+                      className="inline-flex items-center gap-1.5 border border-white/[0.14] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[#2DD4BF] hover:bg-white/[0.08] transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       Add Quick Status Row
@@ -463,7 +651,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                     {(sec.bullets || []).map((b: BulletItem, bIdx) => (
                       <div
                         key={b.id}
-                        className="flex items-start gap-2 border border-[#1E232D] bg-[#0E1116] p-3"
+                        className="flex items-start gap-2 border border-white/[0.10] bg-black/60 p-3"
                       >
                         <span className="font-mono-tabular text-xs text-[#2DD4BF] pt-1.5 w-6 shrink-0">
                           {sec.type === 'trivia'
@@ -482,10 +670,10 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             placeholder={
                               sec.type === 'trivia'
                                 ? 'Trivia highlight or topic (optional)'
-                                : 'Bullet heading (e.g. Astral Resonance)'
+                                : 'Bullet heading (e.g. Late-Night Acoustic Sessions)'
                             }
                             aria-label={`${sec.title} item ${bIdx + 1} heading`}
-                            className="w-full border border-[#2C3B52] bg-[#090D14] px-3 py-1.5 text-xs font-semibold text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
+                            className="w-full border border-white/[0.14] bg-black/80 px-3 py-1.5 text-xs font-semibold text-[#F3F4F6] focus:border-[#2DD4BF] focus:outline-none"
                           />
                           <textarea
                             rows={2}
@@ -495,9 +683,9 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                               next[bIdx] = { ...b, content: e.target.value };
                               handleUpdateSection(sec.id, { bullets: next });
                             }}
-                            placeholder="Details (supports [[Character]] and [[Location]] hyperlinks)..."
+                            placeholder="Details (supports [[Zoi]] and [[Location]] hyperlinks)..."
                             aria-label={`${sec.title} item ${bIdx + 1} details`}
-                            className="w-full border border-[#2C3B52] bg-[#090D14] p-2.5 text-xs text-[#D1D5DB] leading-relaxed focus:border-[#2DD4BF] focus:outline-none"
+                            className="w-full border border-white/[0.14] bg-black/80 p-2.5 text-xs text-[#D1D5DB] leading-relaxed focus:border-[#2DD4BF] focus:outline-none"
                           />
                         </div>
                         <button
@@ -509,7 +697,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                             handleUpdateSection(sec.id, { bullets: next });
                           }}
                           aria-label={`Remove item ${bIdx + 1}`}
-                          className="border border-[#2C3B52] bg-[#162030] p-1.5 text-[#9CA3AF] hover:text-[#EF4444]"
+                          className="border border-white/[0.14] bg-white/[0.04] p-1.5 text-[#9CA3AF] hover:text-[#EF4444]"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -528,7 +716,7 @@ export const SectionBuilder: React.FC<SectionBuilderProps> = ({
                         ];
                         handleUpdateSection(sec.id, { bullets: next });
                       }}
-                      className="inline-flex items-center gap-1.5 border border-[#2C3B52] bg-[#162030] px-3 py-1.5 text-xs font-medium text-[#2DD4BF] hover:bg-[#1F2430] transition-colors"
+                      className="inline-flex items-center gap-1.5 border border-white/[0.14] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[#2DD4BF] hover:bg-white/[0.08] transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       {sec.type === 'trivia'

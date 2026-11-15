@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   CharacterEntry,
+  ImageCropConfig,
   LocationEntry,
   SocialCommentReply,
   SocialMediaPost,
@@ -9,14 +10,22 @@ import {
 import {
   formatRelationshipDisplay,
   formatSocialHandle,
+  getFollowersForZoi,
+  getFollowingForZoi,
+  getPersonalityTraitMeta,
   getSocialPostsForEntity,
+  parsePersonalityTraits,
+  pickWeightedCommenterZoi,
 } from '../utils/codexLogic';
 import { HyperlinkedText } from './HyperlinkedText';
+import { ImageCropperModal } from './ImageCropperModal';
 import {
+  BookOpen,
   Calendar,
   Clock,
   CornerDownRight,
   Heart,
+  Image as ImageIcon,
   MapPin,
   MessageCircle,
   Repeat2,
@@ -24,6 +33,9 @@ import {
   Sparkles,
   Trash2,
   User,
+  UserCheck,
+  UserPlus,
+  Users,
 } from 'lucide-react';
 
 export interface AiSocialGenerationParams {
@@ -60,6 +72,13 @@ interface SocialFeedViewProps {
   ) => void;
   onDeleteReply: (postId: string, commentId: string, replyId: string) => void;
   onTriggerAiSocial: (params: AiSocialGenerationParams) => Promise<void>;
+  onUpdateSocialBanner?: (
+    socialBannerDataUrl: string,
+    rawSocialBannerDataUrl?: string,
+    socialBannerCropConfig?: ImageCropConfig
+  ) => void;
+  onTriggerNaturalFollow?: (preferredZoiId?: string) => void;
+  onOpenDossier?: () => void;
   onNavigate: (type: 'character' | 'location', id: string) => void;
 }
 
@@ -78,13 +97,17 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
   onDeletePost,
   onToggleLikePost,
   onToggleRepost,
-  onAddComment,
   onDeleteComment,
-  onAddReply,
   onDeleteReply,
   onTriggerAiSocial,
+  onUpdateSocialBanner,
+  onTriggerNaturalFollow,
+  onOpenDossier,
   onNavigate,
 }) => {
+  const [isBannerCropperOpen, setIsBannerCropperOpen] = useState(false);
+  const [newPostText, setNewPostText] = useState('');
+
   const entityId =
     entityType === 'character' ? character?.id || '' : location?.id || '';
   const entityName =
@@ -96,13 +119,28 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
     entityType === 'character'
       ? character?.portraitDataUrl || ''
       : location?.imageDataUrl || '';
-  const entityBanner =
+
+  // Dedicated social media profile banner image (strictly separate from backgroundDataUrl)
+  const socialBannerUrl =
     entityType === 'character'
-      ? character?.backgroundDataUrl || character?.portraitDataUrl || ''
-      : location?.backgroundDataUrl || location?.imageDataUrl || '';
+      ? character?.socialBannerDataUrl || ''
+      : location?.socialBannerDataUrl || '';
+  const rawSocialBannerUrl =
+    entityType === 'character'
+      ? character?.rawSocialBannerDataUrl || character?.socialBannerDataUrl || ''
+      : location?.rawSocialBannerDataUrl || location?.socialBannerDataUrl || '';
+  const socialBannerCropConfig =
+    entityType === 'character'
+      ? character?.socialBannerCropConfig
+      : location?.socialBannerCropConfig;
+
   const entitySubtitle =
     entityType === 'character'
-      ? [character?.occupation || character?.role, character?.title]
+      ? [
+          character?.age,
+          character?.occupation || character?.role,
+          character?.title,
+        ]
           .filter(Boolean)
           .join(' · ') || 'Zoi Resident'
       : [location?.category, location?.region].filter(Boolean).join(' · ') ||
@@ -112,106 +150,40 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
       ? character?.summary || ''
       : location?.summary || '';
 
+  const characterTraits = useMemo(
+    () =>
+      entityType === 'character'
+        ? parsePersonalityTraits(character?.personality)
+        : [],
+    [entityType, character?.personality]
+  );
+
   const entityPosts = useMemo(
     () => getSocialPostsForEntity(entityType, entityId, socialPosts),
     [entityType, entityId, socialPosts]
   );
 
-  // Other Zois available to comment on this page's posts
+  // Following & Followers lists for Zoi pages
+  const followingZois = useMemo(
+    () =>
+      entityType === 'character' && character
+        ? getFollowingForZoi(character, characters)
+        : [],
+    [entityType, character, characters]
+  );
+
+  const followerZois = useMemo(
+    () =>
+      entityType === 'character' && character
+        ? getFollowersForZoi(character.id, characters)
+        : [],
+    [entityType, character, characters]
+  );
+
   const otherZois = useMemo(
     () => characters.filter((c) => c.id !== entityId),
     [characters, entityId]
   );
-
-  const [newPostText, setNewPostText] = useState('');
-  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
-    {}
-  );
-  const [selectedCommenterByPost, setSelectedCommenterByPost] = useState<
-    Record<string, string>
-  >({});
-  const [activeReplyCommentId, setActiveReplyCommentId] = useState<
-    string | null
-  >(null);
-  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-  const [selectedReplierByComment, setSelectedReplierByComment] = useState<
-    Record<string, string>
-  >({});
-
-  const resolveCommenterEntity = (postId: string) => {
-    const selectedId = selectedCommenterByPost[postId];
-    if (selectedId) {
-      const foundZoi = characters.find((c) => c.id === selectedId);
-      if (foundZoi) {
-        return {
-          type: 'character' as const,
-          id: foundZoi.id,
-          name: foundZoi.name,
-          handle: formatSocialHandle(foundZoi.name),
-          avatar: foundZoi.portraitDataUrl,
-        };
-      }
-      const foundLoc = locations.find((l) => l.id === selectedId);
-      if (foundLoc) {
-        return {
-          type: 'location' as const,
-          id: foundLoc.id,
-          name: foundLoc.name,
-          handle: formatSocialHandle(foundLoc.name),
-          avatar: foundLoc.imageDataUrl,
-        };
-      }
-    }
-    // Default to first other Zoi if one exists, otherwise the page owner
-    if (otherZois.length > 0) {
-      const firstOther = otherZois[0];
-      return {
-        type: 'character' as const,
-        id: firstOther.id,
-        name: firstOther.name,
-        handle: formatSocialHandle(firstOther.name),
-        avatar: firstOther.portraitDataUrl,
-      };
-    }
-    return {
-      type: entityType,
-      id: entityId,
-      name: entityName,
-      handle: entityHandle,
-      avatar: entityAvatar,
-    };
-  };
-
-  const resolveReplierEntity = (commentId: string) => {
-    const selectedId = selectedReplierByComment[commentId];
-    if (selectedId) {
-      const foundZoi = characters.find((c) => c.id === selectedId);
-      if (foundZoi) {
-        return {
-          type: 'character' as const,
-          id: foundZoi.id,
-          name: foundZoi.name,
-          handle: formatSocialHandle(foundZoi.name),
-        };
-      }
-      const foundLoc = locations.find((l) => l.id === selectedId);
-      if (foundLoc) {
-        return {
-          type: 'location' as const,
-          id: foundLoc.id,
-          name: foundLoc.name,
-          handle: formatSocialHandle(foundLoc.name),
-        };
-      }
-    }
-    // Default replier is the page's Zoi / Location replying to comments left on their post
-    return {
-      type: entityType,
-      id: entityId,
-      name: entityName,
-      handle: entityHandle,
-    };
-  };
 
   const resolveAvatarByAuthor = (
     authorType: 'character' | 'location',
@@ -247,49 +219,24 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
     setNewPostText('');
   };
 
-  const handlePublishManualComment = (postId: string) => {
-    const draft = (commentDrafts[postId] || '').trim();
-    if (!draft) return;
+  const handleSparkAutoComment = (post: SocialMediaPost) => {
+    const existingCommenterIds = post.comments.map((c) => c.authorId);
+    const picked = pickWeightedCommenterZoi(
+      entityId,
+      characters,
+      existingCommenterIds
+    );
+    const actingType = picked ? 'character' : entityType;
+    const actingId = picked ? picked.zoi.id : entityId;
 
-    const commenter = resolveCommenterEntity(postId);
-    const newComment: SocialPostComment = {
-      id: `scomm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      postId,
-      authorType: commenter.type,
-      authorId: commenter.id,
-      authorName: commenter.name,
-      authorHandle: commenter.handle,
-      content: draft,
-      likesCount: 0,
-      isAiGenerated: false,
-      replies: [],
-      createdAt: new Date().toISOString(),
-    };
-
-    onAddComment(postId, newComment);
-    setCommentDrafts((prev) => ({ ...prev, [postId]: '' }));
-  };
-
-  const handlePublishManualReply = (postId: string, commentId: string) => {
-    const draft = (replyDrafts[commentId] || '').trim();
-    if (!draft) return;
-
-    const replier = resolveReplierEntity(commentId);
-    const newReply: SocialCommentReply = {
-      id: `sreply-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      authorType: replier.type,
-      authorId: replier.id,
-      authorName: replier.name,
-      authorHandle: replier.handle,
-      content: draft,
-      likesCount: 0,
-      isAiGenerated: false,
-      createdAt: new Date().toISOString(),
-    };
-
-    onAddReply(postId, commentId, newReply);
-    setReplyDrafts((prev) => ({ ...prev, [commentId]: '' }));
-    setActiveReplyCommentId(null);
+    void onTriggerAiSocial({
+      mode: 'comment',
+      pageEntityType: entityType,
+      pageEntityId: entityId,
+      actingEntityType: actingType,
+      actingEntityId: actingId,
+      postId: post.id,
+    });
   };
 
   const totalCommentsCount = useMemo(
@@ -314,23 +261,57 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
 
   return (
     <div className="mx-auto max-w-4xl inzoi-glass-panel overflow-hidden">
-      {/* Twitter/X Inspired Profile Banner & Header */}
-      <div className="relative h-36 sm:h-44 w-full bg-black/80 border-b border-white/[0.11] overflow-hidden">
-        {entityBanner ? (
+      {/* Twitter/X Inspired Profile Banner Header (Separate from Entry Page Background) */}
+      <div className="relative h-40 sm:h-48 w-full bg-black/80 border-b border-white/[0.11] overflow-hidden group">
+        {socialBannerUrl ? (
           <>
             <img
-              src={entityBanner}
-              alt={`${entityName} banner`}
+              src={socialBannerUrl}
+              alt={`${entityName} social media banner`}
               referrerPolicy="no-referrer"
-              className="h-full w-full object-cover opacity-55"
+              className="h-full w-full object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#050608] via-black/40 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#050608] via-black/30 to-transparent" />
           </>
         ) : (
-          <div className="h-full w-full bg-gradient-to-r from-[#070B12] via-[#0B1622] to-[#050608] flex items-center justify-end px-8">
+          <div className="h-full w-full bg-gradient-to-r from-[#070B12] via-[#0B1622] to-[#050608] flex items-center justify-between px-8">
+            <div className="text-xs font-mono-tabular text-[#64748B]">
+              Dedicated Social Media Banner (Separate from Page Background)
+            </div>
             <span className="font-mono-tabular text-xs uppercase tracking-widest text-[#2DD4BF]/40">
-              ZoiNet · City Social Feed
+              ZoiNet · Primary Social Feed
             </span>
+          </div>
+        )}
+
+        {/* Social Media Banner Upload / Reset Controls */}
+        {onUpdateSocialBanner && (
+          <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsBannerCropperOpen(true)}
+              className="inline-flex items-center gap-1.5 border border-white/[0.18] bg-black/75 backdrop-blur-md px-3 py-1.5 text-xs font-medium text-white hover:border-[#2DD4BF] hover:text-[#2DD4BF] transition-colors"
+            >
+              <ImageIcon className="h-3.5 w-3.5 text-[#2DD4BF]" />
+              <span>
+                {socialBannerUrl
+                  ? 'Change Social Banner'
+                  : 'Upload Social Banner'}
+              </span>
+            </button>
+
+            {socialBannerUrl && (
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateSocialBanner('', undefined, undefined)
+                }
+                aria-label="Reset social media banner"
+                className="inline-flex items-center gap-1 border border-white/[0.18] bg-black/75 backdrop-blur-md px-2.5 py-1.5 text-xs font-medium text-[#94A3B8] hover:text-[#EF4444] transition-colors"
+              >
+                <span>Reset Banner</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -353,20 +334,31 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
             )}
           </div>
 
-          {/* Shared AI Cooldown Status & AI Post Trigger */}
-          <div className="flex flex-wrap items-center gap-2.5">
+          {/* Shared AI Cooldown Status, Encyclopedia Dossier Page 2 Link & AI Post Trigger */}
+          <div className="flex flex-wrap items-center gap-2">
+            {onOpenDossier && (
+              <button
+                type="button"
+                onClick={onOpenDossier}
+                className="inline-flex items-center gap-1.5 border border-white/[0.16] bg-black/75 px-3 py-1.5 text-xs font-medium text-[#38BDF8] hover:border-[#38BDF8] hover:text-[#60A5FA] transition-colors whitespace-nowrap shrink-0"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>Encyclopedia Dossier (2nd Page)</span>
+              </button>
+            )}
+
             <span className="text-[11px] font-mono-tabular text-[#94A3B8] flex items-center gap-1.5 border border-white/[0.10] bg-black/60 px-2.5 py-1.5">
               <Clock className="h-3 w-3 text-[#2DD4BF]" />
               <span>
                 {aiCooldownRemainingSec > 0
-                  ? `Shared Site AI Cooldown: ${aiCooldownRemainingSec}s`
+                  ? `Shared AI Cooldown: ${aiCooldownRemainingSec}s`
                   : 'Shared Site AI Ready'}
               </span>
             </span>
 
             <button
               type="button"
-              disabled={isGeneratingAi || aiCooldownRemainingSec > 0}
+              disabled={isGeneratingAi}
               onClick={() =>
                 void onTriggerAiSocial({
                   mode: 'post',
@@ -379,16 +371,14 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
               <Sparkles className="h-3.5 w-3.5" />
               <span>
                 {isGeneratingAi
-                  ? 'Drafting AI Post...'
-                  : aiCooldownRemainingSec > 0
-                    ? `AI Cooldown (${aiCooldownRemainingSec}s)`
-                    : `AI Post as ${entityName}`}
+                  ? 'Drafting Post...'
+                  : `Generate Post as ${entityName}`}
               </span>
             </button>
           </div>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <div>
             <div className="flex items-center gap-2">
               <h2 className="font-display text-xl sm:text-2xl font-bold text-white">
@@ -417,11 +407,27 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
             </p>
           )}
 
-          {/* Metadata Line (Location, Relationship, Birth Month, Posts Count) */}
+          {characterTraits.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              {characterTraits.map((trait) => {
+                const meta = getPersonalityTraitMeta(trait);
+                return (
+                  <span
+                    key={trait}
+                    className={`px-2 py-0.5 text-[11px] border ${meta.badgeClass}`}
+                  >
+                    {trait}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Metadata Line (Location, Relationship, Birth Month, Following/Followers, Posts Count) */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-1 text-xs text-[#94A3B8]">
             {entityType === 'character' && character?.originLocation && (
               <span className="inline-flex items-center gap-1">
-                <MapPin className="h-3.5 w-3.5 text-[#2DD4BF]" />
+                <MapPin className="h-3.5 w-3.5 text-[#38BDF8]" />
                 <HyperlinkedText
                   text={character.originLocation}
                   characters={characters}
@@ -453,6 +459,18 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
                 />
               </span>
             )}
+            {entityType === 'character' && (
+              <>
+                <span className="font-mono-tabular text-white font-semibold">
+                  {followingZois.length}{' '}
+                  <span className="font-normal text-[#94A3B8]">Following</span>
+                </span>
+                <span className="font-mono-tabular text-white font-semibold">
+                  {followerZois.length}{' '}
+                  <span className="font-normal text-[#94A3B8]">Followers</span>
+                </span>
+              </>
+            )}
             <span className="font-mono-tabular text-white font-semibold">
               {entityPosts.length}{' '}
               <span className="font-normal text-[#94A3B8]">Posts</span>
@@ -460,14 +478,97 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
             <span className="font-mono-tabular text-white font-semibold">
               {totalCommentsCount}{' '}
               <span className="font-normal text-[#94A3B8]">
-                Comments &amp; Replies
+                Auto-Comments &amp; Replies
               </span>
             </span>
           </div>
+
+          {/* Natural Zoi Following Connections Panel */}
+          {entityType === 'character' && (
+            <div className="mt-3 border border-white/[0.10] bg-black/55 p-3.5 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs">
+                  <Users className="h-3.5 w-3.5 text-[#2DD4BF]" />
+                  <span className="font-semibold text-white">
+                    ZoiNet Social Circle
+                  </span>
+                  <span className="text-[11px] text-[#94A3B8]">
+                    · Zois naturally follow each other, boosting their chance of
+                    commenting and posting about one another
+                  </span>
+                </div>
+
+                {onTriggerNaturalFollow && otherZois.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onTriggerNaturalFollow(entityId)}
+                    className="inline-flex items-center gap-1 border border-[#2DD4BF]/50 bg-[#2DD4BF]/12 px-2.5 py-1 text-[11px] font-semibold text-[#2DD4BF] hover:bg-[#2DD4BF] hover:text-[#050608] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <UserPlus className="h-3 w-3" />
+                    <span>Spark Natural Follow</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs">
+                <div className="space-y-1">
+                  <div className="text-[11px] font-mono-tabular text-[#94A3B8] flex items-center gap-1">
+                    <UserCheck className="h-3 w-3 text-[#2DD4BF]" />
+                    <span>Following ({followingZois.length})</span>
+                  </div>
+                  {followingZois.length === 0 ? (
+                    <p className="text-[11px] text-[#64748B]">
+                      Not following any Zois yet — connections form naturally over
+                      time.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {followingZois.map((target) => (
+                        <button
+                          key={target.id}
+                          type="button"
+                          onClick={() => onNavigate('character', target.id)}
+                          className="inline-flex items-center gap-1 border border-[#38BDF8]/40 bg-[#38BDF8]/10 px-2 py-0.5 text-[11px] font-medium text-[#38BDF8] hover:bg-[#38BDF8]/20 transition-colors"
+                        >
+                          <span>{target.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="text-[11px] font-mono-tabular text-[#94A3B8] flex items-center gap-1">
+                    <Users className="h-3 w-3 text-[#38BDF8]" />
+                    <span>Followers ({followerZois.length})</span>
+                  </div>
+                  {followerZois.length === 0 ? (
+                    <p className="text-[11px] text-[#64748B]">
+                      No followers yet — other Zois will discover {entityName} on
+                      the city feed.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {followerZois.map((follower) => (
+                        <button
+                          key={follower.id}
+                          type="button"
+                          onClick={() => onNavigate('character', follower.id)}
+                          className="inline-flex items-center gap-1 border border-[#2DD4BF]/40 bg-[#2DD4BF]/10 px-2 py-0.5 text-[11px] font-medium text-[#2DD4BF] hover:bg-[#2DD4BF]/20 transition-colors"
+                        >
+                          <span>{follower.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Compose New Post Box (Twitter/X Style) */}
+      {/* Compose New Post Box (As Page Owner) */}
       <form
         onSubmit={handlePublishManualPost}
         className="p-5 border-b border-white/[0.11] bg-black/50 space-y-3"
@@ -571,93 +672,91 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
               No Posts on {entityName}&apos;s Feed Yet
             </h3>
             <p className="text-xs text-[#94A3B8] max-w-md mx-auto leading-relaxed">
-              Write a post above or generate an in-character AI post. Other Zois
-              can leave comments on every post, and {entityName} can reply
-              directly to their comments.
+              {entityName} will automatically populate this feed with posts over
+              time, or you can post above. Comments from other Zois (especially
+              followers) and replies are generated automatically.
             </p>
           </div>
         ) : (
-          entityPosts.map((post) => {
-            const commenter = resolveCommenterEntity(post.id);
-
-            return (
-              <article
-                key={post.id}
-                className="p-5 sm:p-6 space-y-4 hover:bg-white/[0.02] transition-colors"
-              >
-                {/* Post Author Row */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="h-10 w-10 border border-white/[0.14] bg-black/80 overflow-hidden shrink-0">
-                      {entityAvatar ? (
-                        <img
-                          src={entityAvatar}
-                          alt={post.authorName}
-                          referrerPolicy="no-referrer"
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="h-full w-full flex items-center justify-center text-xs font-bold text-[#2DD4BF]">
-                          {post.authorName.slice(0, 2).toUpperCase()}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-display text-sm font-bold text-white">
-                          {post.authorName}
-                        </span>
-                        <span className="text-xs font-mono-tabular text-[#94A3B8]">
-                          {post.authorHandle}
-                        </span>
-                        <span className="text-xs text-[#64748B]">·</span>
-                        <time
-                          dateTime={post.createdAt}
-                          className="text-xs font-mono-tabular text-[#64748B]"
-                        >
-                          {new Date(post.createdAt).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}{' '}
-                          · {post.createdAt.slice(0, 10)}
-                        </time>
-                        {post.isAiGenerated && (
-                          <span className="text-[10px] font-mono-tabular text-[#2DD4BF] border border-[#2DD4BF]/30 bg-[#2DD4BF]/10 px-1.5 py-0.5">
-                            AI
-                          </span>
-                        )}
+          entityPosts.map((post) => (
+            <article
+              key={post.id}
+              className="p-5 sm:p-6 space-y-4 hover:bg-white/[0.02] transition-colors"
+            >
+              {/* Post Author Row */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="h-10 w-10 border border-white/[0.14] bg-black/80 overflow-hidden shrink-0">
+                    {entityAvatar ? (
+                      <img
+                        src={entityAvatar}
+                        alt={post.authorName}
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center text-xs font-bold text-[#2DD4BF]">
+                        {post.authorName.slice(0, 2).toUpperCase()}
                       </div>
-                    </div>
+                    )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => onDeletePost(post.id)}
-                    aria-label="Delete post"
-                    className="p-1 text-[#64748B] hover:text-[#EF4444] transition-colors"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-display text-sm font-bold text-white">
+                        {post.authorName}
+                      </span>
+                      <span className="text-xs font-mono-tabular text-[#94A3B8]">
+                        {post.authorHandle}
+                      </span>
+                      <span className="text-xs text-[#64748B]">·</span>
+                      <time
+                        dateTime={post.createdAt}
+                        className="text-xs font-mono-tabular text-[#64748B]"
+                      >
+                        {new Date(post.createdAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}{' '}
+                        · {post.createdAt.slice(0, 10)}
+                      </time>
+                      {post.isAiGenerated && (
+                        <span className="text-[10px] font-mono-tabular text-[#2DD4BF] border border-[#2DD4BF]/30 bg-[#2DD4BF]/10 px-1.5 py-0.5">
+                          Auto-Zoi
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                {/* Post Body */}
-                <div className="text-[15px] text-[#F1F5F9] leading-relaxed whitespace-pre-line pl-0 sm:pl-13">
-                  <HyperlinkedText
-                    text={post.content}
-                    characters={characters}
-                    locations={locations}
-                    autoHyperlinkNames={autoHyperlinkNames}
-                    showLinkPreviews={showLinkPreviews}
-                    onNavigate={onNavigate}
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => onDeletePost(post.id)}
+                  aria-label="Delete post"
+                  className="p-1 text-[#64748B] hover:text-[#EF4444] transition-colors"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
 
-                {/* Post Interaction Metrics Bar */}
-                <div className="flex flex-wrap items-center gap-6 pl-0 sm:pl-13 pt-1 text-xs text-[#94A3B8]">
+              {/* Post Body */}
+              <div className="text-[15px] text-[#F1F5F9] leading-relaxed whitespace-pre-line pl-0 sm:pl-13">
+                <HyperlinkedText
+                  text={post.content}
+                  characters={characters}
+                  locations={locations}
+                  autoHyperlinkNames={autoHyperlinkNames}
+                  showLinkPreviews={showLinkPreviews}
+                  onNavigate={onNavigate}
+                />
+              </div>
+
+              {/* Post Interaction Metrics Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-4 pl-0 sm:pl-13 pt-1 text-xs text-[#94A3B8]">
+                <div className="flex flex-wrap items-center gap-6">
                   <span className="inline-flex items-center gap-1.5 font-mono-tabular">
                     <MessageCircle className="h-3.5 w-3.5 text-[#2DD4BF]" />
-                    <span>{post.comments.length} Comments</span>
+                    <span>{post.comments.length} Auto-Comments</span>
                   </span>
 
                   <button
@@ -679,26 +778,79 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
                   </button>
                 </div>
 
-                {/* Comment Section & Thread (Other Zois Commenting + Author Replying) */}
-                <div className="pl-0 sm:pl-13 pt-3 space-y-3 border-t border-white/[0.08]">
-                  {/* Existing Comments */}
-                  {post.comments.length > 0 && (
-                    <div className="space-y-3">
-                      {post.comments.map((comment) => {
-                        const commentAvatar = resolveAvatarByAuthor(
-                          comment.authorType,
-                          comment.authorId
-                        );
-                        const isReplyBoxOpen =
-                          activeReplyCommentId === comment.id;
+                {/* Automatic Comment Trigger (Weighted by Followers — no manual commenting as other Zois) */}
+                {otherZois.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isGeneratingAi}
+                    onClick={() => handleSparkAutoComment(post)}
+                    className="inline-flex items-center gap-1.5 border border-[#2DD4BF]/50 bg-[#2DD4BF]/15 px-3 py-1 text-xs font-semibold text-[#2DD4BF] hover:bg-[#2DD4BF] hover:text-[#050608] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                    title="Automatically generate a comment from another Zoi (followers have a higher chance of commenting)"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    <span>Spark Auto-Comment</span>
+                  </button>
+                )}
+              </div>
 
-                        return (
-                          <div
-                            key={comment.id}
-                            className="border border-white/[0.10] bg-black/55 p-3.5 space-y-2.5"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-2.5 min-w-0">
+              {/* Automated Comment Section & Author Replies */}
+              <div className="pl-0 sm:pl-13 pt-3 space-y-3 border-t border-white/[0.08]">
+                {post.comments.length === 0 ? (
+                  <div className="text-[11px] text-[#64748B] font-mono-tabular flex items-center justify-between">
+                    <span>
+                      Comments from other Zois (weighted by followers) appear
+                      here automatically.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {post.comments.map((comment) => {
+                      const commentAvatar = resolveAvatarByAuthor(
+                        comment.authorType,
+                        comment.authorId
+                      );
+                      const isFollower =
+                        comment.authorType === 'character' &&
+                        Boolean(
+                          characters
+                            .find((c) => c.id === comment.authorId)
+                            ?.followingIds?.includes(entityId)
+                        );
+
+                      return (
+                        <div
+                          key={comment.id}
+                          className="border border-white/[0.10] bg-black/55 p-3.5 space-y-2.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onNavigate(
+                                    comment.authorType,
+                                    comment.authorId
+                                  )
+                                }
+                                className="h-7 w-7 border border-white/[0.14] bg-black/80 overflow-hidden shrink-0"
+                              >
+                                {commentAvatar ? (
+                                  <img
+                                    src={commentAvatar}
+                                    alt={comment.authorName}
+                                    referrerPolicy="no-referrer"
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="h-full w-full flex items-center justify-center text-[10px] font-bold text-[#2DD4BF]">
+                                    {comment.authorName
+                                      .slice(0, 2)
+                                      .toUpperCase()}
+                                  </div>
+                                )}
+                              </button>
+
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -707,341 +859,167 @@ export const SocialFeedView: React.FC<SocialFeedViewProps> = ({
                                       comment.authorId
                                     )
                                   }
-                                  className="h-7 w-7 border border-white/[0.14] bg-black/80 overflow-hidden shrink-0"
+                                  className="font-display text-xs font-bold text-[#38BDF8] hover:text-[#60A5FA] transition-colors"
                                 >
-                                  {commentAvatar ? (
-                                    <img
-                                      src={commentAvatar}
-                                      alt={comment.authorName}
-                                      referrerPolicy="no-referrer"
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <div className="h-full w-full flex items-center justify-center text-[10px] font-bold text-[#2DD4BF]">
-                                      {comment.authorName
-                                        .slice(0, 2)
-                                        .toUpperCase()}
-                                    </div>
-                                  )}
+                                  {comment.authorName}
                                 </button>
+                                <span className="text-[11px] font-mono-tabular text-[#94A3B8]">
+                                  {comment.authorHandle}
+                                </span>
+                                {isFollower && (
+                                  <span className="text-[9px] font-mono-tabular text-[#2DD4BF] border border-[#2DD4BF]/35 bg-[#2DD4BF]/10 px-1">
+                                    Follows {entityName}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
 
-                                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onNavigate(
-                                        comment.authorType,
-                                        comment.authorId
-                                      )
-                                    }
-                                    className="font-display text-xs font-bold text-white hover:text-[#2DD4BF] transition-colors"
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={isGeneratingAi}
+                                onClick={() =>
+                                  void onTriggerAiSocial({
+                                    mode: 'reply',
+                                    pageEntityType: entityType,
+                                    pageEntityId: entityId,
+                                    actingEntityType: entityType,
+                                    actingEntityId: entityId,
+                                    postId: post.id,
+                                    commentId: comment.id,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1 border border-[#2DD4BF]/40 bg-[#2DD4BF]/10 px-2 py-0.5 text-[10px] font-semibold text-[#2DD4BF] hover:bg-[#2DD4BF] hover:text-[#050608] disabled:opacity-40 transition-colors"
+                                title={`Automatically generate a reply from ${entityName} to this comment`}
+                              >
+                                <Sparkles className="h-2.5 w-2.5" />
+                                <span>Auto-Reply</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onDeleteComment(post.id, comment.id)
+                                }
+                                aria-label="Delete comment"
+                                className="text-[#64748B] hover:text-[#EF4444]"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="text-xs text-[#E2E8F0] leading-relaxed pl-9">
+                            <HyperlinkedText
+                              text={comment.content}
+                              characters={characters}
+                              locations={locations}
+                              autoHyperlinkNames={autoHyperlinkNames}
+                              showLinkPreviews={showLinkPreviews}
+                              onNavigate={onNavigate}
+                            />
+                          </div>
+
+                          {/* Nested Auto-Replies left on this Comment */}
+                          {comment.replies.length > 0 && (
+                            <div className="pl-6 sm:pl-9 pt-2 space-y-2 border-l-2 border-[#2DD4BF]/30 ml-3">
+                              {comment.replies.map((reply) => {
+                                const replyAvatar = resolveAvatarByAuthor(
+                                  reply.authorType,
+                                  reply.authorId
+                                );
+                                return (
+                                  <div
+                                    key={reply.id}
+                                    className="bg-black/60 border border-white/[0.08] p-2.5 space-y-1"
                                   >
-                                    {comment.authorName}
-                                  </button>
-                                  <span className="text-[11px] font-mono-tabular text-[#94A3B8]">
-                                    {comment.authorHandle}
-                                  </span>
-                                  {comment.isAiGenerated && (
-                                    <span className="text-[9px] font-mono-tabular text-[#2DD4BF] border border-[#2DD4BF]/30 px-1">
-                                      AI
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setActiveReplyCommentId(
-                                      isReplyBoxOpen ? null : comment.id
-                                    )
-                                  }
-                                  className="text-[11px] font-medium text-[#2DD4BF] hover:underline"
-                                >
-                                  Reply
-                                </button>
-
-                                <button
-                                  type="button"
-                                  disabled={
-                                    isGeneratingAi ||
-                                    aiCooldownRemainingSec > 0
-                                  }
-                                  onClick={() =>
-                                    void onTriggerAiSocial({
-                                      mode: 'reply',
-                                      pageEntityType: entityType,
-                                      pageEntityId: entityId,
-                                      actingEntityType: entityType,
-                                      actingEntityId: entityId,
-                                      postId: post.id,
-                                      commentId: comment.id,
-                                    })
-                                  }
-                                  className="inline-flex items-center gap-1 border border-[#2DD4BF]/40 bg-[#2DD4BF]/10 px-2 py-0.5 text-[10px] font-semibold text-[#2DD4BF] hover:bg-[#2DD4BF] hover:text-[#050608] disabled:opacity-40 transition-colors"
-                                  title={`Generate an AI reply from ${entityName} to this comment`}
-                                >
-                                  <Sparkles className="h-2.5 w-2.5" />
-                                  <span>
-                                    {aiCooldownRemainingSec > 0
-                                      ? `${aiCooldownRemainingSec}s`
-                                      : `AI Reply`}
-                                  </span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    onDeleteComment(post.id, comment.id)
-                                  }
-                                  aria-label="Delete comment"
-                                  className="text-[#64748B] hover:text-[#EF4444]"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="text-xs text-[#E2E8F0] leading-relaxed pl-9">
-                              <HyperlinkedText
-                                text={comment.content}
-                                characters={characters}
-                                locations={locations}
-                                autoHyperlinkNames={autoHyperlinkNames}
-                                showLinkPreviews={showLinkPreviews}
-                                onNavigate={onNavigate}
-                              />
-                            </div>
-
-                            {/* Nested Replies left on this Comment */}
-                            {comment.replies.length > 0 && (
-                              <div className="pl-6 sm:pl-9 pt-2 space-y-2 border-l-2 border-[#2DD4BF]/30 ml-3">
-                                {comment.replies.map((reply) => {
-                                  const replyAvatar = resolveAvatarByAuthor(
-                                    reply.authorType,
-                                    reply.authorId
-                                  );
-                                  return (
-                                    <div
-                                      key={reply.id}
-                                      className="bg-black/60 border border-white/[0.08] p-2.5 space-y-1"
-                                    >
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-2">
-                                          <CornerDownRight className="h-3 w-3 text-[#2DD4BF]" />
-                                          {replyAvatar ? (
-                                            <img
-                                              src={replyAvatar}
-                                              alt={reply.authorName}
-                                              referrerPolicy="no-referrer"
-                                              className="h-5 w-5 object-cover border border-white/[0.14]"
-                                            />
-                                          ) : (
-                                            <User className="h-3.5 w-3.5 text-[#2DD4BF]" />
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() =>
-                                              onNavigate(
-                                                reply.authorType,
-                                                reply.authorId
-                                              )
-                                            }
-                                            className="font-display text-xs font-bold text-white hover:text-[#2DD4BF]"
-                                          >
-                                            {reply.authorName}
-                                          </button>
-                                          <span className="text-[10px] font-mono-tabular text-[#94A3B8]">
-                                            {reply.authorHandle}
-                                          </span>
-                                          {reply.isAiGenerated && (
-                                            <span className="text-[9px] font-mono-tabular text-[#2DD4BF] border border-[#2DD4BF]/30 px-1">
-                                              AI
-                                            </span>
-                                          )}
-                                        </div>
-
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2">
+                                        <CornerDownRight className="h-3 w-3 text-[#2DD4BF]" />
+                                        {replyAvatar ? (
+                                          <img
+                                            src={replyAvatar}
+                                            alt={reply.authorName}
+                                            referrerPolicy="no-referrer"
+                                            className="h-5 w-5 object-cover border border-white/[0.14]"
+                                          />
+                                        ) : (
+                                          <User className="h-3.5 w-3.5 text-[#2DD4BF]" />
+                                        )}
                                         <button
                                           type="button"
                                           onClick={() =>
-                                            onDeleteReply(
-                                              post.id,
-                                              comment.id,
-                                              reply.id
+                                            onNavigate(
+                                              reply.authorType,
+                                              reply.authorId
                                             )
                                           }
-                                          aria-label="Delete reply"
-                                          className="text-[#64748B] hover:text-[#EF4444]"
+                                          className="font-display text-xs font-bold text-[#38BDF8] hover:text-[#60A5FA]"
                                         >
-                                          <Trash2 className="h-3 w-3" />
+                                          {reply.authorName}
                                         </button>
+                                        <span className="text-[10px] font-mono-tabular text-[#94A3B8]">
+                                          {reply.authorHandle}
+                                        </span>
                                       </div>
 
-                                      <div className="text-xs text-[#CBD5E1] leading-relaxed pl-5">
-                                        <HyperlinkedText
-                                          text={reply.content}
-                                          characters={characters}
-                                          locations={locations}
-                                          autoHyperlinkNames={
-                                            autoHyperlinkNames
-                                          }
-                                          showLinkPreviews={showLinkPreviews}
-                                          onNavigate={onNavigate}
-                                        />
-                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          onDeleteReply(
+                                            post.id,
+                                            comment.id,
+                                            reply.id
+                                          )
+                                        }
+                                        aria-label="Delete reply"
+                                        className="text-[#64748B] hover:text-[#EF4444]"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </button>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            )}
 
-                            {/* Inline Reply Composer for this Comment */}
-                            {isReplyBoxOpen && (
-                              <div className="pl-6 sm:pl-9 pt-2 flex flex-wrap items-center gap-2">
-                                <select
-                                  aria-label="Select Zoi replying to comment"
-                                  value={
-                                    selectedReplierByComment[comment.id] ||
-                                    entityId
-                                  }
-                                  onChange={(e) =>
-                                    setSelectedReplierByComment((prev) => ({
-                                      ...prev,
-                                      [comment.id]: e.target.value,
-                                    }))
-                                  }
-                                  className="border border-white/[0.14] bg-black/80 px-2 py-1.5 text-xs text-[#2DD4BF]"
-                                >
-                                  <option value={entityId}>
-                                    Reply as {entityName}
-                                  </option>
-                                  {characters
-                                    .filter((c) => c.id !== entityId)
-                                    .map((c) => (
-                                      <option key={c.id} value={c.id}>
-                                        Reply as {c.name}
-                                      </option>
-                                    ))}
-                                </select>
-
-                                <input
-                                  type="text"
-                                  value={replyDrafts[comment.id] || ''}
-                                  onChange={(e) =>
-                                    setReplyDrafts((prev) => ({
-                                      ...prev,
-                                      [comment.id]: e.target.value,
-                                    }))
-                                  }
-                                  placeholder={`Reply to ${comment.authorName}...`}
-                                  aria-label={`Reply to ${comment.authorName}`}
-                                  className="flex-1 min-w-[180px] border border-white/[0.14] bg-black/80 px-3 py-1.5 text-xs text-white focus:border-[#2DD4BF] focus:outline-none"
-                                />
-
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handlePublishManualReply(
-                                      post.id,
-                                      comment.id
-                                    )
-                                  }
-                                  className="bg-[#2DD4BF] px-3 py-1.5 text-xs font-semibold text-[#050608] hover:bg-[#5EEAD4] transition-colors"
-                                >
-                                  Send Reply
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Add a Comment Box (As Another Zoi or Location) */}
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <select
-                      aria-label="Select commenting Zoi"
-                      value={selectedCommenterByPost[post.id] || commenter.id}
-                      onChange={(e) =>
-                        setSelectedCommenterByPost((prev) => ({
-                          ...prev,
-                          [post.id]: e.target.value,
-                        }))
-                      }
-                      className="border border-white/[0.14] bg-black/75 px-2.5 py-1.5 text-xs text-[#2DD4BF]"
-                    >
-                      {otherZois.map((z) => (
-                        <option key={z.id} value={z.id}>
-                          Comment as {z.name} (Zoi)
-                        </option>
-                      ))}
-                      <option value={entityId}>
-                        Comment as {entityName}
-                      </option>
-                      {locations
-                        .filter((l) => l.id !== entityId)
-                        .map((l) => (
-                          <option key={l.id} value={l.id}>
-                            Comment as {l.name} (Lot)
-                          </option>
-                        ))}
-                    </select>
-
-                    <input
-                      type="text"
-                      value={commentDrafts[post.id] || ''}
-                      onChange={(e) =>
-                        setCommentDrafts((prev) => ({
-                          ...prev,
-                          [post.id]: e.target.value,
-                        }))
-                      }
-                      placeholder={`Write a comment as ${commenter.name}...`}
-                      aria-label={`Write a comment on ${post.authorName}'s post`}
-                      className="flex-1 min-w-[200px] border border-white/[0.14] bg-black/75 px-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none"
-                    />
-
-                    <button
-                      type="button"
-                      onClick={() => handlePublishManualComment(post.id)}
-                      disabled={!(commentDrafts[post.id] || '').trim()}
-                      className="border border-white/[0.14] bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white hover:border-[#2DD4BF] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
-                    >
-                      Comment
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={isGeneratingAi || aiCooldownRemainingSec > 0}
-                      onClick={() =>
-                        void onTriggerAiSocial({
-                          mode: 'comment',
-                          pageEntityType: entityType,
-                          pageEntityId: entityId,
-                          actingEntityType: commenter.type,
-                          actingEntityId: commenter.id,
-                          postId: post.id,
-                        })
-                      }
-                      className="inline-flex items-center gap-1 border border-[#2DD4BF]/50 bg-[#2DD4BF]/15 px-3 py-1.5 text-xs font-semibold text-[#2DD4BF] hover:bg-[#2DD4BF] hover:text-[#050608] disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
-                      title="Generate an in-character comment from the selected Zoi (shares site AI cooldown)"
-                    >
-                      <Sparkles className="h-3 w-3" />
-                      <span>
-                        {aiCooldownRemainingSec > 0
-                          ? `AI (${aiCooldownRemainingSec}s)`
-                          : 'AI Zoi Comment'}
-                      </span>
-                    </button>
+                                    <div className="text-xs text-[#CBD5E1] leading-relaxed pl-5">
+                                      <HyperlinkedText
+                                        text={reply.content}
+                                        characters={characters}
+                                        locations={locations}
+                                        autoHyperlinkNames={autoHyperlinkNames}
+                                        showLinkPreviews={showLinkPreviews}
+                                        onNavigate={onNavigate}
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
-              </article>
-            );
-          })
+                )}
+              </div>
+            </article>
+          ))
         )}
       </div>
+
+      {/* Dedicated Social Media Banner Uploader & Cropper Modal */}
+      {onUpdateSocialBanner && (
+        <ImageCropperModal
+          isOpen={isBannerCropperOpen}
+          initialRawImage={rawSocialBannerUrl}
+          initialConfig={socialBannerCropConfig}
+          defaultAspect="16:9"
+          entityName={`${entityName} Social Media Banner`}
+          onApply={(croppedDataUrl, rawDataUrl, config) => {
+            onUpdateSocialBanner(croppedDataUrl, rawDataUrl, config);
+            setIsBannerCropperOpen(false);
+          }}
+          onClose={() => setIsBannerCropperOpen(false)}
+        />
+      )}
     </div>
   );
 };

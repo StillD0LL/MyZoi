@@ -4,9 +4,21 @@ import {
   LOCATION_CATEGORIES,
   LocationCategoryType,
   LocationEntry,
+  LocationSortOption,
 } from '../types/codex';
-import { findBacklinksForEntity } from '../utils/codexLogic';
-import { Building2, Home, Landmark, MapPin, Plus, Search } from 'lucide-react';
+import {
+  findBacklinksForEntity,
+  sortLocationsForDirectory,
+} from '../utils/codexLogic';
+import {
+  ArrowUpDown,
+  Building2,
+  Home,
+  Landmark,
+  MapPin,
+  Plus,
+  Search,
+} from 'lucide-react';
 
 interface LocationDirectoryViewProps {
   locations: LocationEntry[];
@@ -15,6 +27,18 @@ interface LocationDirectoryViewProps {
   onSelectLocation: (id: string) => void;
   onCreateLocation: () => void;
 }
+
+const LOCATION_SORT_OPTIONS: Array<{
+  value: LocationSortOption;
+  label: string;
+}> = [
+  { value: 'recent', label: 'Sort: Recently Updated' },
+  { value: 'created_desc', label: 'Sort: Newest Added' },
+  { value: 'name_asc', label: 'Sort: Name (A → Z)' },
+  { value: 'name_desc', label: 'Sort: Name (Z → A)' },
+  { value: 'category_asc', label: 'Sort: Lot Type' },
+  { value: 'region_asc', label: 'Sort: Region / District' },
+];
 
 export function getLocationCategoryIcon(category: LocationCategoryType) {
   switch (category) {
@@ -41,10 +65,11 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
   const [activeCategory, setActiveCategory] = useState<
     'all' | LocationCategoryType
   >('all');
+  const [sortBy, setSortBy] = useState<LocationSortOption>('recent');
 
-  const filteredLocations = useMemo(() => {
+  const sortedAndFilteredLocations = useMemo(() => {
     const q = filterQuery.trim().toLowerCase();
-    return locations.filter((l) => {
+    const filtered = locations.filter((l) => {
       if (activeCategory !== 'all' && l.category !== activeCategory) {
         return false;
       }
@@ -57,7 +82,8 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
         l.rulerOrFaction.toLowerCase().includes(q)
       );
     });
-  }, [locations, filterQuery, activeCategory]);
+    return sortLocationsForDirectory(filtered, sortBy);
+  }, [locations, filterQuery, activeCategory, sortBy]);
 
   if (locations.length === 0) {
     return (
@@ -76,7 +102,7 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
           <strong className="text-white">Community lots</strong>, and{' '}
           <strong className="text-white">Business lots</strong>. Characters and
           locations can be hyperlinked bidirectionally using{' '}
-          <code className="font-mono-tabular text-[#2DD4BF]">
+          <code className="font-mono-tabular text-[#38BDF8]">
             [[Location Name]]
           </code>
           .
@@ -97,7 +123,7 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header & Sort Bar */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/[0.11] pb-5">
         <div>
           <div className="text-xs font-semibold text-[#2DD4BF] uppercase tracking-wider mb-1">
@@ -110,6 +136,23 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Sorting Dropdown (Locations without uploaded images automatically move to bottom) */}
+          <div className="relative flex items-center">
+            <ArrowUpDown className="h-3.5 w-3.5 text-[#2DD4BF] absolute left-3 pointer-events-none" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as LocationSortOption)}
+              aria-label="Sort Location entries"
+              className="border border-white/[0.14] bg-black/75 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white focus:border-[#2DD4BF] focus:outline-none"
+            >
+              {LOCATION_SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="relative">
             <Search className="h-3.5 w-3.5 text-[#94A3B8] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -118,7 +161,7 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
               onChange={(e) => setFilterQuery(e.target.value)}
               placeholder="Filter locations & lots..."
               aria-label="Filter locations"
-              className="border border-white/[0.14] bg-black/65 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none w-48 sm:w-60"
+              className="border border-white/[0.14] bg-black/65 backdrop-blur-md pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#64748B] focus:border-[#2DD4BF] focus:outline-none w-48 sm:w-56"
             />
           </div>
 
@@ -171,7 +214,7 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
           gridColumns === 4 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'
         } gap-6`}
       >
-        {filteredLocations.map((loc) => {
+        {sortedAndFilteredLocations.map((loc) => {
           const backlinkCount = findBacklinksForEntity(
             loc.id,
             loc.name,
@@ -198,6 +241,9 @@ export const LocationDirectoryView: React.FC<LocationDirectoryViewProps> = ({
                 ) : (
                   <div className="flex h-full w-full flex-col items-center justify-center bg-black/70 p-6">
                     <CategoryIcon className="h-7 w-7 text-[#2DD4BF]/60" />
+                    <span className="mt-1.5 text-[10px] font-mono-tabular text-[#64748B]">
+                      No Cover Image Uploaded
+                    </span>
                   </div>
                 )}
 

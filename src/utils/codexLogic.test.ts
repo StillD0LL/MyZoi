@@ -5,18 +5,32 @@ import {
   compactArchiveForStorage,
   createAnonymousSiteFeedEvent,
   createEmptyArchive,
+  evolveNaturalZoiFollow,
   findBacklinksForEntity,
   formatEntityLinkToken,
   formatRelationshipDisplay,
   formatSocialHandle,
+  formatZoiAge,
+  generateAutonomousZoiComment,
+  generateAutonomousZoiPost,
+  generateAutonomousZoiReply,
   getAllSubmittedPhotosForHub,
   getAspectDimensions,
+  getFollowersForZoi,
+  getFollowingForZoi,
+  getPersonalityTraitMeta,
   getPhotosForEntity,
   getSocialPostsForEntity,
   normalizeLocationCategory,
   parseHyperlinkedSegments,
+  parsePersonalityTraits,
+  parseZoiAge,
+  pickWeightedCommenterZoi,
   resolveActivePageBackground,
   searchCodexEntries,
+  serializePersonalityTraits,
+  sortCharactersForDirectory,
+  sortLocationsForDirectory,
   validateAndNormalizeArchive,
 } from './codexLogic';
 import {
@@ -38,6 +52,7 @@ const mockLocation: LocationEntry = {
   summary: 'An ancient spire where [[Vaelen Thorne]] was exiled.',
   imageDataUrl: 'data:image/jpeg;base64,loc1',
   backgroundDataUrl: 'data:image/jpeg;base64,locBg1',
+  socialBannerDataUrl: 'data:image/jpeg;base64,locBanner1',
   attributes: [],
   sections: [],
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -51,11 +66,11 @@ const mockCharacter: CharacterEntry = {
   role: 'Inquisitor',
   gender: 'Male',
   pronouns: 'He/Him',
-  age: '34',
+  age: 'Adult (34)',
   birthdate: 'November',
   height: '185–189 cm (6\'1"–6\'2")',
   occupation: 'Chief Archivist',
-  personality: 'Stoic · Observant',
+  personality: 'Socialite, Hopeless Romantic, Shameless Flirt',
   ambition: 'Chart the Northern Wastes',
   householdStatus: 'Single',
   relationshipStatus: 'Married',
@@ -66,8 +81,10 @@ const mockCharacter: CharacterEntry = {
   originLocation: 'Obsidian Spire',
   summary:
     'Born in the shadow of [[Obsidian Spire]], Vaelen guards the northern passes.',
+  followingIds: [],
   portraitDataUrl: 'data:image/jpeg;base64,char1',
   backgroundDataUrl: 'data:image/jpeg;base64,charBg1',
+  socialBannerDataUrl: 'data:image/jpeg;base64,charBanner1',
   profileDesign: 'encyclopedia',
   personalAttributes: [
     { id: 'attr-1', label: 'Weapon', value: 'Halberd of Glass' },
@@ -129,7 +146,7 @@ test('parseHyperlinkedSegments resolves explicit [[wiki]] links and automatic en
   assert.equal(linkSegments[1].targetId, 'char-1');
 });
 
-test('findBacklinksForEntity locates bidirectional references across Zois and locations including relationshipPartner', () => {
+test('findBacklinksForEntity locates bidirectional references across Zois and locations including Business lot owner & staff', () => {
   const partnerZoi: CharacterEntry = {
     ...mockCharacter,
     id: 'char-2',
@@ -140,6 +157,23 @@ test('findBacklinksForEntity locates bidirectional references across Zois and lo
     relationshipPartner: 'Vaelen Thorne',
     relationships: 'Married to [[Vaelen Thorne]]',
     sections: [],
+  };
+
+  const businessLocation: LocationEntry = {
+    ...mockLocation,
+    id: 'loc-biz',
+    name: 'Velvet Roast Lounge',
+    category: 'Business lot',
+    summary: 'Late-night espresso and jazz bar.',
+    businessOwner: '[[Elena Rostova]]',
+    businessStaff: [
+      {
+        id: 'staff-1',
+        name: 'Vaelen Thorne',
+        role: 'Head Roaster',
+        shiftOrNotes: 'Evening Shift',
+      },
+    ],
   };
 
   const backlinksToLocation = findBacklinksForEntity(
@@ -156,10 +190,63 @@ test('findBacklinksForEntity locates bidirectional references across Zois and lo
     'char-2',
     'Elena Rostova',
     [mockCharacter, partnerZoi],
-    [mockLocation]
+    [mockLocation, businessLocation]
   );
-  assert.equal(backlinksToPartner.length, 1);
-  assert.equal(backlinksToPartner[0].sourceId, 'char-1');
+  assert.equal(backlinksToPartner.length, 2);
+  assert.ok(backlinksToPartner.some((b) => b.sourceId === 'char-1'));
+  assert.ok(backlinksToPartner.some((b) => b.sourceId === 'loc-biz'));
+});
+
+test('formatZoiAge and parseZoiAge handle the 6 life stages plus optional exact numbered age', () => {
+  assert.equal(formatZoiAge('Young Adult', '24'), 'Young Adult (24)');
+  assert.equal(formatZoiAge('Teenager', ''), 'Teenager');
+  assert.equal(formatZoiAge('Ageless', ''), 'Ageless');
+
+  assert.deepEqual(parseZoiAge('Young Adult (24)'), {
+    stage: 'Young Adult',
+    exactAge: '24',
+  });
+  assert.deepEqual(parseZoiAge('Elder'), {
+    stage: 'Elder',
+    exactAge: '',
+  });
+  assert.deepEqual(parseZoiAge('24'), {
+    stage: 'Young Adult',
+    exactAge: '24',
+  });
+  assert.deepEqual(parseZoiAge('Teenager (13–17)'), {
+    stage: 'Teenager',
+    exactAge: '',
+  });
+});
+
+test('parsePersonalityTraits, serializePersonalityTraits, and getPersonalityTraitMeta handle multi-select inZOI traits', () => {
+  const parsed = parsePersonalityTraits(
+    'Socialite, Recluse · Hopeless Romantic, Shameless Flirt, Socialite'
+  );
+  assert.deepEqual(parsed, [
+    'Socialite',
+    'Recluse',
+    'Hopeless Romantic',
+    'Shameless Flirt',
+  ]);
+
+  assert.equal(
+    serializePersonalityTraits(parsed),
+    'Socialite, Recluse, Hopeless Romantic, Shameless Flirt'
+  );
+
+  assert.equal(getPersonalityTraitMeta('Socialite').category, 'positive');
+  assert.equal(getPersonalityTraitMeta('Recluse').category, 'negative');
+  assert.equal(
+    getPersonalityTraitMeta('Hopeless Romantic').category,
+    'innocent'
+  );
+  assert.equal(
+    getPersonalityTraitMeta('Shameless Flirt').category,
+    'suggestive'
+  );
+  assert.equal(getPersonalityTraitMeta('Night Owl').category, 'custom');
 });
 
 test('getPhotosForEntity and getAllSubmittedPhotosForHub filter and aggregate tagged photos', () => {
@@ -192,7 +279,7 @@ test('createAnonymousSiteFeedEvent creates living city updates with Zoi terminol
   assert.ok(!evt.body.toLowerCase().includes('admin'));
 });
 
-test('searchCodexEntries matches names, attributes, occupation, and nested trivia content', () => {
+test('searchCodexEntries matches names, attributes, occupation, and Business lot staff', () => {
   const byWeapon = searchCodexEntries(
     'Halberd of Glass',
     'all',
@@ -202,14 +289,25 @@ test('searchCodexEntries matches names, attributes, occupation, and nested trivi
   assert.equal(byWeapon.length, 1);
   assert.equal(byWeapon[0].id, 'char-1');
 
-  const byOccupation = searchCodexEntries(
-    'Chief Archivist',
-    'character',
+  const bizLoc: LocationEntry = {
+    ...mockLocation,
+    id: 'loc-biz-2',
+    name: 'Neon Vinyl Studio',
+    category: 'Business lot',
+    businessOwner: 'Vaelen Thorne',
+    businessStaff: [
+      { id: 'st-1', name: 'Mina Park', role: 'Master Mastering Engineer' },
+    ],
+  };
+
+  const byStaffRole = searchCodexEntries(
+    'Mastering Engineer',
+    'location',
     [mockCharacter],
-    [mockLocation]
+    [bizLoc]
   );
-  assert.equal(byOccupation.length, 1);
-  assert.equal(byOccupation[0].id, 'char-1');
+  assert.equal(byStaffRole.length, 1);
+  assert.equal(byStaffRole[0].id, 'loc-biz-2');
 });
 
 test('image cropper geometry math calculates deterministic cover scaling and offsets', () => {
@@ -232,7 +330,7 @@ test('image cropper geometry math calculates deterministic cover scaling and off
   assert.equal(draw.dy, -240);
 });
 
-test('formatEntityLinkToken and validateAndNormalizeArchive normalize status to Alive and enforce encyclopedia design', () => {
+test('formatEntityLinkToken and validateAndNormalizeArchive normalize status, age, followingIds, socialBannerDataUrl, and Business lot fields', () => {
   assert.equal(formatEntityLinkToken('Obsidian Spire'), '[[Obsidian Spire]]');
 
   assert.equal(normalizeLocationCategory('City'), 'City');
@@ -246,20 +344,26 @@ test('formatEntityLinkToken and validateAndNormalizeArchive normalize status to 
         id: 'c-legacy',
         name: 'Lyra',
         species: 'Non-Binary',
+        age: '22',
         status: 'Active',
         profileDesign: 'tactical_file',
         householdStatus: 'Family',
         relationshipStatus: 'Engaged',
         relationshipPartner: 'Vaelen Thorne',
+        followingIds: ['char-1', 'c-legacy', 'char-1'],
         backgroundDataUrl: 'data:image/png;base64,charBg',
+        socialBannerDataUrl: 'data:image/png;base64,charSocialBanner',
       },
     ],
     locations: [
       {
         id: 'l-1',
-        name: 'Dowon',
-        category: 'City',
+        name: 'Dowon Espresso Bar',
+        category: 'Business lot',
+        businessOwner: '[[Lyra]]',
+        businessStaff: [{ id: 's1', name: 'Vaelen Thorne', role: 'Barista' }],
         backgroundDataUrl: 'data:image/png;base64,locBg',
+        socialBannerDataUrl: 'data:image/png;base64,locSocialBanner',
       },
     ],
     settings: {
@@ -270,13 +374,19 @@ test('formatEntityLinkToken and validateAndNormalizeArchive normalize status to 
   });
   assert.equal(normalized.characters.length, 1);
   assert.equal(normalized.characters[0].gender, 'Non-Binary');
+  assert.equal(normalized.characters[0].age, 'Young Adult (22)');
   assert.equal(normalized.characters[0].status, 'Alive');
   assert.equal(normalized.characters[0].profileDesign, 'encyclopedia');
-  assert.equal(normalized.characters[0].householdStatus, 'Family');
-  assert.equal(normalized.characters[0].relationshipStatus, 'Engaged');
+  assert.deepEqual(normalized.characters[0].followingIds, ['char-1']);
   assert.equal(
-    normalized.characters[0].relationships,
-    'Engaged to [[Vaelen Thorne]]'
+    normalized.characters[0].socialBannerDataUrl,
+    'data:image/png;base64,charSocialBanner'
+  );
+  assert.equal(normalized.locations[0].businessOwner, '[[Lyra]]');
+  assert.equal(normalized.locations[0].businessStaff?.length, 1);
+  assert.equal(
+    normalized.locations[0].socialBannerDataUrl,
+    'data:image/png;base64,locSocialBanner'
   );
   assert.equal(normalized.settings.defaultProfileDesign, 'encyclopedia');
 });
@@ -366,6 +476,7 @@ test('compactArchiveForStorage removes redundant raw*DataUrl fields and prevents
       ...mockCharacter,
       rawPortraitDataUrl: 'data:image/png;base64,' + 'A'.repeat(20000),
       rawBackgroundDataUrl: 'data:image/png;base64,' + 'B'.repeat(20000),
+      rawSocialBannerDataUrl: 'data:image/png;base64,' + 'D'.repeat(20000),
     },
   ];
   archive.settings.rawDefaultSiteBackgroundUrl =
@@ -374,9 +485,148 @@ test('compactArchiveForStorage removes redundant raw*DataUrl fields and prevents
   const compacted = compactArchiveForStorage(archive, false);
   assert.equal(compacted.characters[0].rawPortraitDataUrl, undefined);
   assert.equal(compacted.characters[0].rawBackgroundDataUrl, undefined);
+  assert.equal(compacted.characters[0].rawSocialBannerDataUrl, undefined);
   assert.equal(compacted.settings.rawDefaultSiteBackgroundUrl, undefined);
   assert.equal(
     compacted.characters[0].portraitDataUrl,
     mockCharacter.portraitDataUrl
   );
+  assert.equal(
+    compacted.characters[0].socialBannerDataUrl,
+    mockCharacter.socialBannerDataUrl
+  );
+});
+
+test('sortCharactersForDirectory and sortLocationsForDirectory always move entries without uploaded profile images to the bottom', () => {
+  const zoiNoImageA: CharacterEntry = {
+    ...mockCharacter,
+    id: 'z-no-img-a',
+    name: 'Aaron NoImage',
+    age: 'Child (9)',
+    portraitDataUrl: '',
+    updatedAt: '2026-03-10T00:00:00.000Z',
+  };
+  const zoiWithImageZ: CharacterEntry = {
+    ...mockCharacter,
+    id: 'z-img-z',
+    name: 'Zara WithImage',
+    age: 'Elder (68)',
+    portraitDataUrl: 'data:image/jpeg;base64,imgZ',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const zoiWithImageB: CharacterEntry = {
+    ...mockCharacter,
+    id: 'z-img-b',
+    name: 'Bram WithImage',
+    age: 'Young Adult (24)',
+    portraitDataUrl: 'data:image/jpeg;base64,imgB',
+    updatedAt: '2026-02-01T00:00:00.000Z',
+  };
+
+  const sortedByNameAsc = sortCharactersForDirectory(
+    [zoiNoImageA, zoiWithImageZ, zoiWithImageB],
+    'name_asc'
+  );
+  assert.deepEqual(
+    sortedByNameAsc.map((c) => c.id),
+    ['z-img-b', 'z-img-z', 'z-no-img-a']
+  );
+
+  const sortedByRecent = sortCharactersForDirectory(
+    [zoiNoImageA, zoiWithImageZ, zoiWithImageB],
+    'recent'
+  );
+  assert.deepEqual(
+    sortedByRecent.map((c) => c.id),
+    ['z-img-b', 'z-img-z', 'z-no-img-a']
+  );
+
+  const locNoImageA: LocationEntry = {
+    ...mockLocation,
+    id: 'l-no-img-a',
+    name: 'Alpha Lot NoImage',
+    category: 'City',
+    imageDataUrl: '',
+    updatedAt: '2026-03-10T00:00:00.000Z',
+  };
+  const locWithImageZ: LocationEntry = {
+    ...mockLocation,
+    id: 'l-img-z',
+    name: 'Zenith Plaza WithImage',
+    category: 'Residential lot',
+    imageDataUrl: 'data:image/jpeg;base64,locZ',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const sortedLocs = sortLocationsForDirectory(
+    [locNoImageA, locWithImageZ],
+    'name_asc'
+  );
+  assert.deepEqual(
+    sortedLocs.map((l) => l.id),
+    ['l-img-z', 'l-no-img-a']
+  );
+});
+
+test('evolveNaturalZoiFollow, pickWeightedCommenterZoi, and autonomous post/comment/reply helpers work accurately', () => {
+  const zoi1: CharacterEntry = {
+    ...mockCharacter,
+    id: 'z-1',
+    name: 'Kaelen Vance',
+    followingIds: [],
+  };
+  const zoi2: CharacterEntry = {
+    ...mockCharacter,
+    id: 'z-2',
+    name: 'Sora Han',
+    followingIds: [],
+  };
+
+  const evolved = evolveNaturalZoiFollow([zoi1, zoi2], 'z-1');
+  assert.ok(evolved);
+  assert.equal(evolved.updatedCharacters.length, 2);
+  const totalFollows = evolved.updatedCharacters.reduce(
+    (acc, c) => acc + (c.followingIds?.length || 0),
+    0
+  );
+  assert.equal(totalFollows, 1);
+
+  const zoiFollower: CharacterEntry = {
+    ...zoi2,
+    followingIds: ['z-1'],
+  };
+  const followersOfZoi1 = getFollowersForZoi('z-1', [zoi1, zoiFollower]);
+  assert.equal(followersOfZoi1.length, 1);
+  assert.equal(followersOfZoi1[0].id, 'z-2');
+
+  const followingOfZoi2 = getFollowingForZoi(zoiFollower, [zoi1, zoiFollower]);
+  assert.equal(followingOfZoi2.length, 1);
+  assert.equal(followingOfZoi2[0].id, 'z-1');
+
+  const pickedCommenter = pickWeightedCommenterZoi('z-1', [zoi1, zoiFollower]);
+  assert.ok(pickedCommenter);
+  assert.equal(pickedCommenter.zoi.id, 'z-2');
+  assert.equal(pickedCommenter.isFollower, true);
+  assert.ok(pickedCommenter.weight >= 3.5);
+
+  const autoPost = generateAutonomousZoiPost(
+    zoiFollower,
+    [zoi1, zoiFollower],
+    [mockLocation]
+  );
+  assert.equal(autoPost.authorId, 'z-2');
+  assert.ok(autoPost.content.length > 10);
+
+  const autoComment = generateAutonomousZoiComment(zoiFollower, autoPost);
+  assert.equal(autoComment.authorId, 'z-2');
+  assert.ok(autoComment.content.length > 5);
+
+  const autoReply = generateAutonomousZoiReply(
+    zoi1.name,
+    'character',
+    zoi1.id,
+    autoComment
+  );
+  assert.equal(autoReply.authorId, 'z-1');
+  assert.ok(autoReply.content.includes('[[Sora Han]]'));
 });

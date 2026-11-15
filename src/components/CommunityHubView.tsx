@@ -5,6 +5,7 @@ import {
   GalleryPhoto,
   LOCATION_CATEGORIES,
   LocationEntry,
+  SocialMediaPost,
 } from '../types/codex';
 import {
   getAllSubmittedPhotosForHub,
@@ -18,14 +19,17 @@ import {
   Check,
   Clock,
   Cloud,
+  Heart,
   Home,
   Images,
   Landmark,
   MapPin,
+  MessageCircle,
   Newspaper,
   Plus,
   Radio,
   RefreshCw,
+  Repeat2,
   Sparkles,
   User,
   X,
@@ -36,6 +40,7 @@ interface CommunityHubViewProps {
   locations: LocationEntry[];
   photos: GalleryPhoto[];
   feedEvents: CityFeedEvent[];
+  socialPosts: SocialMediaPost[];
   autoHyperlinkNames: boolean;
   showLinkPreviews: boolean;
   isAuthenticated: boolean;
@@ -56,11 +61,16 @@ interface CommunityHubViewProps {
   onGoogleLogin: () => void;
 }
 
+type UnifiedHubFeedItem =
+  | { itemType: 'event'; createdAt: string; event: CityFeedEvent }
+  | { itemType: 'social_post'; createdAt: string; post: SocialMediaPost };
+
 export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
   characters,
   locations,
   photos,
   feedEvents,
+  socialPosts,
   autoHyperlinkNames,
   showLinkPreviews,
   isAuthenticated,
@@ -81,7 +91,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
   onGoogleLogin,
 }) => {
   const [feedFilter, setFeedFilter] = useState<
-    'all' | 'site_update' | 'ai_inzoi'
+    'all' | 'social_post' | 'site_update' | 'ai_inzoi'
   >('all');
   const [lightboxPhoto, setLightboxPhoto] = useState<HubDisplayPhoto | null>(
     null
@@ -92,10 +102,37 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
     [characters, locations, photos]
   );
 
-  const filteredEvents = useMemo(() => {
-    if (feedFilter === 'all') return feedEvents;
-    return feedEvents.filter((e) => e.kind === feedFilter);
-  }, [feedEvents, feedFilter]);
+  const unifiedFeedItems = useMemo<UnifiedHubFeedItem[]>(() => {
+    const items: UnifiedHubFeedItem[] = [];
+
+    if (
+      feedFilter === 'all' ||
+      feedFilter === 'site_update' ||
+      feedFilter === 'ai_inzoi'
+    ) {
+      for (const ev of feedEvents) {
+        if (feedFilter === 'all' || ev.kind === feedFilter) {
+          items.push({
+            itemType: 'event',
+            createdAt: ev.createdAt,
+            event: ev,
+          });
+        }
+      }
+    }
+
+    if (feedFilter === 'all' || feedFilter === 'social_post') {
+      for (const post of socialPosts) {
+        items.push({
+          itemType: 'social_post',
+          createdAt: post.createdAt,
+          post,
+        });
+      }
+    }
+
+    return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [feedEvents, socialPosts, feedFilter]);
 
   const lotCategoryCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -114,6 +151,16 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
     characters.find((c) => c.id === id)?.name;
   const resolveLocationName = (id: string) =>
     locations.find((l) => l.id === id)?.name;
+
+  const resolveEntityAvatar = (
+    type: 'character' | 'location',
+    id: string
+  ): string | undefined => {
+    if (type === 'character') {
+      return characters.find((c) => c.id === id)?.portraitDataUrl;
+    }
+    return locations.find((l) => l.id === id)?.imageDataUrl;
+  };
 
   return (
     <div className="space-y-8">
@@ -152,7 +199,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
               <button
                 type="button"
                 onClick={onGoogleLogin}
-                className="inline-flex items-center gap-1.5 text-[#38BDF8] hover:text-[#2DD4BF] font-medium transition-colors"
+                className="inline-flex items-center gap-1.5 text-[#38BDF8] hover:text-[#60A5FA] font-medium transition-colors"
               >
                 <Cloud className="h-3.5 w-3.5" />
                 <span>Resume Google Drive Sync ({rememberedEmail})</span>
@@ -248,7 +295,8 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
                     : 'Pulse City Life'}
               </div>
               <div className="mt-1 text-xs font-mono-tabular text-[#64748B]">
-                {feedEvents.length} City Dispatches
+                {feedEvents.length + socialPosts.length} City &amp; Social
+                Updates
               </div>
             </div>
             <Sparkles className="h-5 w-5 text-[#2DD4BF]/80 shrink-0" />
@@ -366,7 +414,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => onNavigate('character', tc.id)}
-                                className="text-[#2DD4BF] hover:underline font-medium truncate"
+                                className="text-[#38BDF8] hover:text-[#60A5FA] underline decoration-[#38BDF8]/50 font-medium truncate"
                               >
                                 {tc.name}
                               </button>
@@ -381,7 +429,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => onNavigate('location', tl.id)}
-                                className="text-[#2DD4BF] hover:underline font-medium truncate"
+                                className="text-[#38BDF8] hover:text-[#60A5FA] underline decoration-[#38BDF8]/50 font-medium truncate"
                               >
                                 {tl.name}
                               </button>
@@ -400,7 +448,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
 
       {/* LOWER SPLIT: Community Hub Activity Feed (Left) & Wiki Infobox Rail (Right) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Anonymous Living Community Updates + inZOI AI Dispatches */}
+        {/* Left Column: Anonymous Living Community Updates + Zoi Social Posts + inZOI AI Dispatches */}
         <section
           aria-labelledby="hub-feed-heading"
           className="lg:col-span-8 inzoi-glass-panel overflow-hidden"
@@ -408,7 +456,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
           <div className="inzoi-glass-header px-6 py-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <div className="text-xs text-[#94A3B8] mb-1">
-                Municipal &amp; Neighborhood Feed · Live Wiki Activity
+                Municipal &amp; Zoi Social Feed · Live Wiki Activity
               </div>
               <h2
                 id="hub-feed-heading"
@@ -447,11 +495,19 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
               <div className="flex flex-wrap items-center gap-1.5">
                 {(
                   [
-                    { id: 'all', label: `All Updates (${feedEvents.length})` },
+                    {
+                      id: 'all',
+                      label: `All Updates (${feedEvents.length + socialPosts.length})`,
+                    },
+                    {
+                      id: 'social_post',
+                      label: `Zoi Social Posts (${socialPosts.length})`,
+                    },
                     {
                       id: 'site_update',
                       label: `Registry & Site Updates (${
-                        feedEvents.filter((e) => e.kind === 'site_update').length
+                        feedEvents.filter((e) => e.kind === 'site_update')
+                          .length
                       })`,
                     },
                     {
@@ -491,8 +547,8 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
               </div>
             )}
 
-            {/* Feed Stream */}
-            {filteredEvents.length === 0 ? (
+            {/* Unified Feed Stream (Zoi Social Posts + City Updates) */}
+            {unifiedFeedItems.length === 0 ? (
               <div className="border border-white/[0.10] bg-black/50 p-8 text-center space-y-4">
                 <Newspaper className="mx-auto h-7 w-7 text-[#2DD4BF]/80" />
                 <div className="space-y-1">
@@ -500,16 +556,17 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
                     The City Bulletin is Quiet
                   </h3>
                   <p className="text-xs text-[#94A3B8] max-w-lg mx-auto leading-relaxed">
-                    As you document Zois, charter locations, or submit photos,
-                    anonymous municipal updates appear here automatically. You
-                    can also pulse an AI-driven city life update in the style of
-                    inZOI.
+                    As Zois post on their social feeds, or as you document Zois,
+                    charter locations, and submit photos, public updates appear
+                    here automatically.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
                   <button
                     type="button"
-                    disabled={isGeneratingAiUpdate || aiCooldownRemainingSec > 0}
+                    disabled={
+                      isGeneratingAiUpdate || aiCooldownRemainingSec > 0
+                    }
                     onClick={onTriggerAiCityUpdate}
                     className="inline-flex items-center gap-2 bg-[#2DD4BF] px-4 py-2 text-xs font-semibold text-[#050608] hover:bg-[#5EEAD4] disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
                   >
@@ -520,7 +577,123 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                {filteredEvents.map((event) => {
+                {unifiedFeedItems.map((item) => {
+                  if (item.itemType === 'social_post') {
+                    const post = item.post;
+                    const avatarUrl = resolveEntityAvatar(
+                      post.authorType,
+                      post.authorId
+                    );
+                    const totalCommentsCount = post.comments.reduce(
+                      (acc, c) => acc + 1 + c.replies.length,
+                      0
+                    );
+
+                    return (
+                      <article
+                        key={`hub-post-${post.id}`}
+                        className="inzoi-glass-card p-5 transition-colors hover:border-[#38BDF8]/60"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8] mb-3">
+                          <div className="flex items-center gap-2">
+                            <MessageCircle className="h-3.5 w-3.5 text-[#38BDF8]" />
+                            <span className="font-semibold text-[#38BDF8]">
+                              Zoi Social Post (X)
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onNavigate(post.authorType, post.authorId)
+                              }
+                              className="text-white hover:text-[#38BDF8] font-semibold transition-colors"
+                            >
+                              {post.authorName}
+                            </button>
+                            <span className="font-mono-tabular text-[#64748B]">
+                              {post.authorHandle}
+                            </span>
+                          </div>
+                          <time
+                            dateTime={post.createdAt}
+                            className="font-mono-tabular text-[11px] text-[#64748B]"
+                          >
+                            {new Date(post.createdAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}{' '}
+                            · {post.createdAt.slice(0, 10)}
+                          </time>
+                        </div>
+
+                        <div className="flex items-start gap-3.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onNavigate(post.authorType, post.authorId)
+                            }
+                            className="h-10 w-10 border border-white/[0.14] bg-black/70 overflow-hidden shrink-0 flex items-center justify-center"
+                          >
+                            {avatarUrl ? (
+                              <img
+                                src={avatarUrl}
+                                alt={post.authorName}
+                                referrerPolicy="no-referrer"
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <User className="h-4 w-4 text-[#2DD4BF]" />
+                            )}
+                          </button>
+
+                          <div className="flex-1 min-w-0 space-y-2.5">
+                            <div className="text-sm text-[#F8FAFC] leading-relaxed whitespace-pre-line">
+                              <HyperlinkedText
+                                text={post.content}
+                                characters={characters}
+                                locations={locations}
+                                autoHyperlinkNames={autoHyperlinkNames}
+                                showLinkPreviews={showLinkPreviews}
+                                onNavigate={onNavigate}
+                              />
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs text-[#94A3B8]">
+                              <div className="flex items-center gap-4 font-mono-tabular text-[11px]">
+                                <span className="inline-flex items-center gap-1">
+                                  <MessageCircle className="h-3.5 w-3.5 text-[#38BDF8]" />
+                                  <span>{totalCommentsCount} comments</span>
+                                </span>
+                                <span className="inline-flex items-center gap-1">
+                                  <Repeat2 className="h-3.5 w-3.5 text-[#2DD4BF]" />
+                                  <span>{post.repostsCount} reposts</span>
+                                </span>
+                                <span className="inline-flex items-center gap-1">
+                                  <Heart className="h-3.5 w-3.5 text-[#F43F5E]" />
+                                  <span>{post.likesCount} likes</span>
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onNavigate(
+                                    post.pageEntityType,
+                                    post.pageEntityId
+                                  )
+                                }
+                                className="text-xs font-medium text-[#38BDF8] hover:text-[#60A5FA] underline decoration-[#38BDF8]/50"
+                              >
+                                View on {post.authorName}&apos;s Feed →
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  }
+
+                  const event = item.event;
                   const resolvedThumbnailUrl =
                     event.imageUrl ||
                     (event.relatedEntityType === 'character' &&
@@ -579,7 +752,7 @@ export const CommunityHubView: React.FC<CommunityHubViewProps> = ({
                                     event.relatedEntityId!
                                   )
                                 }
-                                className="hover:text-[#2DD4BF] transition-colors text-left"
+                                className="text-[#38BDF8] hover:text-[#60A5FA] underline decoration-[#38BDF8]/50 transition-colors text-left"
                               >
                                 {event.headline}
                               </button>

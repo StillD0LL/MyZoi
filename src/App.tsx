@@ -14,8 +14,14 @@ import {
 } from './types/codex';
 import {
   createAnonymousSiteFeedEvent,
+  createAutonomousFollowFeedEvent,
   createEmptyArchive,
+  evolveNaturalZoiFollow,
   formatSocialHandle,
+  generateAutonomousZoiComment,
+  generateAutonomousZoiPost,
+  generateAutonomousZoiReply,
+  pickWeightedCommenterZoi,
   resolveActivePageBackground,
   validateAndNormalizeArchive,
 } from './utils/codexLogic';
@@ -183,13 +189,29 @@ export default function App() {
         return;
       }
       setArchive((current) => {
+        const idbTotalEntries =
+          idbArchive.characters.length +
+          idbArchive.locations.length +
+          idbArchive.photos.length +
+          (idbArchive.socialPosts || []).length;
+        const currentTotalEntries =
+          current.characters.length +
+          current.locations.length +
+          current.photos.length +
+          (current.socialPosts || []).length;
+
+        if (idbTotalEntries === 0 && currentTotalEntries > 0) {
+          return current;
+        }
+
         const idbHasMoreData =
           idbArchive.photos.length > current.photos.length ||
           idbArchive.characters.length > current.characters.length ||
           idbArchive.locations.length > current.locations.length ||
           (idbArchive.socialPosts || []).length >
             (current.socialPosts || []).length ||
-          idbArchive.updatedAt >= current.updatedAt;
+          (idbTotalEntries >= currentTotalEntries &&
+            idbArchive.updatedAt > current.updatedAt);
         return idbHasMoreData ? idbArchive : current;
       });
     });
@@ -345,9 +367,26 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [archive, executeUploadToDrive, isAuthenticated]);
 
-  // Trigger an AI inZOI-style city life update with shared mindful cooldown protection
+  // Trigger an AI inZOI-style city life update with shared mindful cooldown protection and instant fallback
   const handleTriggerAiCityUpdate = useCallback(async () => {
-    if (isGeneratingAiUpdate || Date.now() < aiCooldownUntilMs) {
+    if (isGeneratingAiUpdate) {
+      return;
+    }
+
+    const currentArchive = archiveRef.current;
+
+    // If shared Gemini API cooldown is active, still keep the Community Hub feed alive with an inZOI city dispatch
+    if (Date.now() < aiCooldownUntilMs) {
+      const fallbackEvent = createFallbackInzoiEvent(
+        currentArchive.characters,
+        currentArchive.locations
+      );
+      setArchive((prev) => ({
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        feedEvents: [fallbackEvent, ...prev.feedEvents].slice(0, 80),
+      }));
+      lastAutoAiTimestampRef.current = Date.now();
       return;
     }
 
@@ -358,7 +397,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          characters: archive.characters.map((c) => ({
+          characters: currentArchive.characters.map((c) => ({
             id: c.id,
             name: c.name,
             gender: c.gender,
@@ -368,7 +407,7 @@ export default function App() {
             ambition: c.ambition,
             affiliation: c.affiliation,
           })),
-          locations: archive.locations.map((l) => ({
+          locations: currentArchive.locations.map((l) => ({
             id: l.id,
             name: l.name,
             category: l.category,
@@ -384,6 +423,15 @@ export default function App() {
             ? data.cooldownRemainingSeconds
             : CLIENT_MANUAL_AI_COOLDOWN_SEC;
         setAiCooldownUntilMs(Date.now() + retrySec * 1000);
+        const fallbackEvent = createFallbackInzoiEvent(
+          currentArchive.characters,
+          currentArchive.locations
+        );
+        setArchive((prev) => ({
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          feedEvents: [fallbackEvent, ...prev.feedEvents].slice(0, 80),
+        }));
         return;
       }
 
@@ -395,20 +443,29 @@ export default function App() {
               ? data.cooldownRemainingSeconds
               : CLIENT_MANUAL_AI_COOLDOWN_SEC;
           setAiCooldownUntilMs(Date.now() + retrySec * 1000);
+          const fallbackEvent = createFallbackInzoiEvent(
+            currentArchive.characters,
+            currentArchive.locations
+          );
+          setArchive((prev) => ({
+            ...prev,
+            updatedAt: new Date().toISOString(),
+            feedEvents: [fallbackEvent, ...prev.feedEvents].slice(0, 80),
+          }));
           return;
         }
 
         const primaryUpdate =
           data?.event || (Array.isArray(data?.updates) ? data.updates[0] : null);
         if (primaryUpdate && primaryUpdate.headline && primaryUpdate.body) {
-          const matchedChar = archive.characters.find(
+          const matchedChar = currentArchive.characters.find(
             (c) =>
               primaryUpdate.headline
                 .toLowerCase()
                 .includes(c.name.toLowerCase()) ||
               primaryUpdate.body.toLowerCase().includes(c.name.toLowerCase())
           );
-          const matchedLoc = archive.locations.find(
+          const matchedLoc = currentArchive.locations.find(
             (l) =>
               primaryUpdate.headline
                 .toLowerCase()
@@ -455,8 +512,8 @@ export default function App() {
       }
 
       const fallbackEvent = createFallbackInzoiEvent(
-        archive.characters,
-        archive.locations
+        currentArchive.characters,
+        currentArchive.locations
       );
       setArchive((prev) => ({
         ...prev,
@@ -468,8 +525,8 @@ export default function App() {
     } catch (err) {
       devLogger.error('handleTriggerAiCityUpdate', err);
       const fallbackEvent = createFallbackInzoiEvent(
-        archive.characters,
-        archive.locations
+        currentArchive.characters,
+        currentArchive.locations
       );
       setArchive((prev) => ({
         ...prev,
@@ -477,45 +534,11 @@ export default function App() {
         feedEvents: [fallbackEvent, ...prev.feedEvents].slice(0, 80),
       }));
       setAiCooldownUntilMs(Date.now() + CLIENT_MANUAL_AI_COOLDOWN_SEC * 1000);
+      lastAutoAiTimestampRef.current = Date.now();
     } finally {
       setIsGeneratingAiUpdate(false);
     }
-  }, [
-    aiCooldownUntilMs,
-    archive.characters,
-    archive.locations,
-    isGeneratingAiUpdate,
-  ]);
-
-  // Automatic ambient inZOI city update interval (respecting user settings & shared mindful cooldowns)
-  useEffect(() => {
-    if (!archive.settings.enableAiCityEvents) return;
-    if (archive.characters.length === 0 && archive.locations.length === 0) {
-      return;
-    }
-
-    const intervalMs = archive.settings.aiCooldownMinutes * 60 * 1000;
-    const timer = window.setInterval(() => {
-      const elapsed = Date.now() - lastAutoAiTimestampRef.current;
-      if (
-        elapsed >= intervalMs &&
-        Date.now() >= aiCooldownUntilMs &&
-        !isGeneratingAiUpdate
-      ) {
-        void handleTriggerAiCityUpdate();
-      }
-    }, 30_000);
-
-    return () => window.clearInterval(timer);
-  }, [
-    aiCooldownUntilMs,
-    archive.characters.length,
-    archive.locations.length,
-    archive.settings.aiCooldownMinutes,
-    archive.settings.enableAiCityEvents,
-    handleTriggerAiCityUpdate,
-    isGeneratingAiUpdate,
-  ]);
+  }, [aiCooldownUntilMs, isGeneratingAiUpdate]);
 
   // Social Media CRUD & Shared AI Social Generation Handlers
   const resolveEntityMeta = useCallback(
@@ -554,13 +577,92 @@ export default function App() {
     [archive.characters, archive.locations]
   );
 
-  const handleCreateSocialPost = useCallback((newPost: SocialMediaPost) => {
-    setArchive((prev) => ({
-      ...prev,
-      updatedAt: new Date().toISOString(),
-      socialPosts: [newPost, ...(prev.socialPosts || [])],
-    }));
+  // Schedule automatic Zoi comment (weighted by followers) and author reply when a new post is created
+  const scheduleAutoEngagementForPost = useCallback((postId: string) => {
+    window.setTimeout(() => {
+      const snap = archiveRef.current;
+      const post = (snap.socialPosts || []).find((p) => p.id === postId);
+      if (!post || post.comments.length > 0) return;
+
+      const pickedCommenter = pickWeightedCommenterZoi(
+        post.authorId,
+        snap.characters,
+        post.comments.map((c) => c.authorId)
+      );
+      if (!pickedCommenter) return;
+
+      const autoComment = generateAutonomousZoiComment(
+        pickedCommenter.zoi,
+        post
+      );
+
+      setArchive((prev) => ({
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        socialPosts: (prev.socialPosts || []).map((p) =>
+          p.id === postId
+            ? {
+                ...p,
+                likesCount: p.likesCount + 1,
+                comments: [...p.comments, autoComment],
+              }
+            : p
+        ),
+      }));
+
+      // Schedule an automatic reply from the post author back to the commenter
+      window.setTimeout(() => {
+        const snapAfter = archiveRef.current;
+        const updatedPost = (snapAfter.socialPosts || []).find(
+          (p) => p.id === postId
+        );
+        const targetComment = updatedPost?.comments.find(
+          (c) => c.id === autoComment.id
+        );
+        if (
+          !updatedPost ||
+          !targetComment ||
+          targetComment.replies.length > 0
+        ) {
+          return;
+        }
+        const autoReply = generateAutonomousZoiReply(
+          updatedPost.authorName,
+          updatedPost.authorType,
+          updatedPost.authorId,
+          targetComment
+        );
+
+        setArchive((prev) => ({
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          socialPosts: (prev.socialPosts || []).map((p) => {
+            if (p.id !== postId) return p;
+            return {
+              ...p,
+              comments: p.comments.map((c) =>
+                c.id === autoComment.id
+                  ? { ...c, replies: [...c.replies, autoReply] }
+                  : c
+              ),
+            };
+          }),
+        }));
+      }, 1600);
+    }, 1400);
   }, []);
+
+  const handleCreateSocialPost = useCallback(
+    (newPost: SocialMediaPost) => {
+      setArchive((prev) => ({
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        socialPosts: [newPost, ...(prev.socialPosts || [])],
+      }));
+      scheduleAutoEngagementForPost(newPost.id);
+    },
+    [scheduleAutoEngagementForPost]
+  );
 
   const handleDeleteSocialPost = useCallback((postId: string) => {
     setArchive((prev) => ({
@@ -668,26 +770,133 @@ export default function App() {
     []
   );
 
-  // Trigger AI Social Post, Comment, or Reply sharing the global AI generation cooldown
+  // Natural Zoi Follow Trigger (gives Zois a natural chance to follow each other)
+  const handleTriggerNaturalFollow = useCallback(
+    (focusCharId?: string) => {
+      setArchive((prev) => {
+        if (prev.characters.length < 2) return prev;
+        const evolved = evolveNaturalZoiFollow(prev.characters, focusCharId);
+        if (!evolved) {
+          return prev;
+        }
+        const followEvent = createAutonomousFollowFeedEvent(
+          evolved.follower,
+          evolved.target
+        );
+        return {
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          characters: evolved.updatedCharacters,
+          feedEvents: [followEvent, ...prev.feedEvents].slice(0, 80),
+        };
+      });
+    },
+    []
+  );
+
+  // Trigger AI Social Post, Comment, or Reply sharing the global AI generation cooldown (with autonomous client fallback)
   const handleTriggerAiSocial = useCallback(
     async (params: AiSocialGenerationParams) => {
-      if (isGeneratingAiUpdate || Date.now() < aiCooldownUntilMs) {
+      if (isGeneratingAiUpdate) {
         return;
       }
 
-      setIsGeneratingAiUpdate(true);
-      setAiError(null);
-
+      const currentArchive = archiveRef.current;
       const actingType = params.actingEntityType || params.pageEntityType;
       const actingId = params.actingEntityId || params.pageEntityId;
       const authorMeta = resolveEntityMeta(actingType, actingId);
       const targetPost = params.postId
-        ? (archive.socialPosts || []).find((p) => p.id === params.postId)
+        ? (currentArchive.socialPosts || []).find((p) => p.id === params.postId)
         : undefined;
       const targetComment =
         targetPost && params.commentId
           ? targetPost.comments.find((c) => c.id === params.commentId)
           : undefined;
+
+      const applyFallbackSocialGeneration = () => {
+        const snap = archiveRef.current;
+        if (params.mode === 'post') {
+          if (params.pageEntityType === 'character') {
+            const zoi = snap.characters.find(
+              (c) => c.id === params.pageEntityId
+            );
+            if (zoi) {
+              const post = generateAutonomousZoiPost(
+                zoi,
+                snap.characters,
+                snap.locations
+              );
+              handleCreateSocialPost(post);
+              return;
+            }
+          }
+          handleCreateSocialPost({
+            id: `post-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            pageEntityType: params.pageEntityType,
+            pageEntityId: params.pageEntityId,
+            authorType: actingType,
+            authorId: actingId,
+            authorName: authorMeta.name,
+            authorHandle: authorMeta.handle,
+            content: `Evening lights and steady street traffic around [[${authorMeta.name}]] tonight. #ZoiNet`,
+            likesCount: Math.floor(Math.random() * 5) + 1,
+            repostsCount: 0,
+            isAiGenerated: true,
+            comments: [],
+            createdAt: new Date().toISOString(),
+          });
+        } else if (params.mode === 'comment' && targetPost) {
+          const picked =
+            snap.characters.find((c) => c.id === actingId) ||
+            pickWeightedCommenterZoi(
+              targetPost.authorId,
+              snap.characters,
+              targetPost.comments.map((c) => c.authorId)
+            )?.zoi;
+          if (picked) {
+            const autoComment = generateAutonomousZoiComment(
+              picked,
+              targetPost
+            );
+            handleAddSocialComment(targetPost.id, autoComment);
+            window.setTimeout(() => {
+              const afterSnap = archiveRef.current;
+              const postNow = (afterSnap.socialPosts || []).find(
+                (p) => p.id === targetPost.id
+              );
+              const commentNow = postNow?.comments.find(
+                (c) => c.id === autoComment.id
+              );
+              if (postNow && commentNow && commentNow.replies.length === 0) {
+                const reply = generateAutonomousZoiReply(
+                  postNow.authorName,
+                  postNow.authorType,
+                  postNow.authorId,
+                  commentNow
+                );
+                handleAddSocialReply(postNow.id, commentNow.id, reply);
+              }
+            }, 1400);
+          }
+        } else if (params.mode === 'reply' && targetPost && targetComment) {
+          const autoReply = generateAutonomousZoiReply(
+            targetPost.authorName,
+            targetPost.authorType,
+            targetPost.authorId,
+            targetComment
+          );
+          handleAddSocialReply(targetPost.id, targetComment.id, autoReply);
+        }
+      };
+
+      // If shared AI API cooldown is active, fulfill via autonomous follower-weighted generator
+      if (Date.now() < aiCooldownUntilMs) {
+        applyFallbackSocialGeneration();
+        return;
+      }
+
+      setIsGeneratingAiUpdate(true);
+      setAiError(null);
 
       try {
         const response = await fetch('/api/social/generate', {
@@ -705,10 +914,10 @@ export default function App() {
             targetCommentAuthorName: targetComment?.authorName,
             targetCommentContent: targetComment?.content,
             otherEntityNames: [
-              ...archive.characters
+              ...currentArchive.characters
                 .filter((c) => c.id !== actingId)
                 .map((c) => c.name),
-              ...archive.locations
+              ...currentArchive.locations
                 .filter((l) => l.id !== actingId)
                 .map((l) => l.name),
             ],
@@ -716,23 +925,25 @@ export default function App() {
         });
 
         const data = await response.json().catch(() => ({}));
-        if (data?.cooldownActive) {
+        if (data?.cooldownActive || !response.ok) {
           const retrySec =
             typeof data.cooldownRemainingSeconds === 'number'
               ? data.cooldownRemainingSeconds
               : CLIENT_MANUAL_AI_COOLDOWN_SEC;
           setAiCooldownUntilMs(Date.now() + retrySec * 1000);
+          applyFallbackSocialGeneration();
           return;
         }
 
         const generatedText =
           typeof data?.content === 'string' && data.content.trim()
             ? data.content.trim()
-            : params.mode === 'post'
-              ? `Taking in the evening atmosphere as ${authorMeta.name}. #ZoiNet`
-              : params.mode === 'comment'
-                ? `Always great catching up with [[${targetPost?.authorName || authorMeta.name}]]!`
-                : `Appreciate the comment, [[${targetComment?.authorName || 'friend'}]]!`;
+            : '';
+
+        if (!generatedText) {
+          applyFallbackSocialGeneration();
+          return;
+        }
 
         const nowIso = new Date().toISOString();
 
@@ -753,8 +964,9 @@ export default function App() {
             createdAt: nowIso,
           });
         } else if (params.mode === 'comment' && params.postId) {
+          const newCommentId = `comment-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           handleAddSocialComment(params.postId, {
-            id: `comment-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: newCommentId,
             postId: params.postId,
             authorType: actingType,
             authorId: actingId,
@@ -766,6 +978,26 @@ export default function App() {
             replies: [],
             createdAt: nowIso,
           });
+          // Automatically trigger post author reply to the new comment
+          const postIdForReply = params.postId;
+          window.setTimeout(() => {
+            const afterSnap = archiveRef.current;
+            const postNow = (afterSnap.socialPosts || []).find(
+              (p) => p.id === postIdForReply
+            );
+            const commentNow = postNow?.comments.find(
+              (c) => c.id === newCommentId
+            );
+            if (postNow && commentNow && commentNow.replies.length === 0) {
+              const reply = generateAutonomousZoiReply(
+                postNow.authorName,
+                postNow.authorType,
+                postNow.authorId,
+                commentNow
+              );
+              handleAddSocialReply(postNow.id, commentNow.id, reply);
+            }
+          }, 1500);
         } else if (
           params.mode === 'reply' &&
           params.postId &&
@@ -794,6 +1026,7 @@ export default function App() {
         lastAutoAiTimestampRef.current = Date.now();
       } catch (err) {
         devLogger.error('handleTriggerAiSocial', err);
+        applyFallbackSocialGeneration();
         setAiCooldownUntilMs(Date.now() + CLIENT_MANUAL_AI_COOLDOWN_SEC * 1000);
       } finally {
         setIsGeneratingAiUpdate(false);
@@ -801,9 +1034,6 @@ export default function App() {
     },
     [
       aiCooldownUntilMs,
-      archive.characters,
-      archive.locations,
-      archive.socialPosts,
       handleAddSocialComment,
       handleAddSocialReply,
       handleCreateSocialPost,
@@ -811,6 +1041,170 @@ export default function App() {
       resolveEntityMeta,
     ]
   );
+
+  // Continuous Autonomous City Feed & Zoi Social Simulation Loop
+  // Ensures the Community Hub feed stays actively updated, Zois naturally follow each other,
+  // populate their own profile pages with posts, and comment/reply on each other's posts.
+  useEffect(() => {
+    // Seed an initial city dispatch if the Community Hub feed is completely empty and enabled
+    const initialSnap = archiveRef.current;
+    if (
+      initialSnap.settings.enableAiCityEvents &&
+      initialSnap.feedEvents.length === 0 &&
+      (initialSnap.characters.length > 0 || initialSnap.locations.length > 0)
+    ) {
+      const initialEvent = createFallbackInzoiEvent(
+        initialSnap.characters,
+        initialSnap.locations
+      );
+      setArchive((prev) =>
+        prev.feedEvents.length === 0
+          ? {
+              ...prev,
+              updatedAt: new Date().toISOString(),
+              feedEvents: [initialEvent],
+            }
+          : prev
+      );
+    }
+
+    const simulationTimer = window.setInterval(() => {
+      const snap = archiveRef.current;
+      if (!snap.settings.enableAiCityEvents) return;
+      if (snap.characters.length === 0 && snap.locations.length === 0) return;
+
+      setArchive((prev) => {
+        let nextCharacters = prev.characters;
+        let nextFeedEvents = prev.feedEvents;
+        let nextSocialPosts = prev.socialPosts || [];
+        let changed = false;
+
+        // 1. Natural chance for Zois to follow each other (if >= 2 Zois exist)
+        if (nextCharacters.length >= 2 && Math.random() < 0.45) {
+          const evolved = evolveNaturalZoiFollow(nextCharacters);
+          if (evolved) {
+            nextCharacters = evolved.updatedCharacters;
+            const followEvent = createAutonomousFollowFeedEvent(
+              evolved.follower,
+              evolved.target
+            );
+            nextFeedEvents = [followEvent, ...nextFeedEvents].slice(0, 80);
+            changed = true;
+          }
+        }
+
+        // 2. Ensure every Zoi populates their own profile page with posts and occasionally posts new updates
+        if (nextCharacters.length > 0) {
+          const zoiWithoutPosts = nextCharacters.find(
+            (c) =>
+              !nextSocialPosts.some(
+                (p) =>
+                  p.pageEntityType === 'character' && p.pageEntityId === c.id
+              )
+          );
+          const targetAuthor =
+            zoiWithoutPosts ||
+            (Math.random() < 0.65
+              ? nextCharacters[
+                  Math.floor(Math.random() * nextCharacters.length)
+                ]
+              : undefined);
+
+          if (targetAuthor) {
+            const newPost = generateAutonomousZoiPost(
+              targetAuthor,
+              nextCharacters,
+              prev.locations
+            );
+            nextSocialPosts = [newPost, ...nextSocialPosts].slice(0, 120);
+            changed = true;
+          }
+        }
+
+        // 3. Follower-weighted automatic comments & author replies on existing Zoi posts
+        if (nextCharacters.length >= 2 && nextSocialPosts.length > 0) {
+          // First check if any recent comment is waiting for a reply from the post author
+          const postNeedingReply = nextSocialPosts.find((p) =>
+            p.comments.some((c) => c.replies.length === 0)
+          );
+          if (postNeedingReply) {
+            const commentWaiting = postNeedingReply.comments.find(
+              (c) => c.replies.length === 0
+            );
+            if (commentWaiting) {
+              const autoReply = generateAutonomousZoiReply(
+                postNeedingReply.authorName,
+                postNeedingReply.authorType,
+                postNeedingReply.authorId,
+                commentWaiting
+              );
+              nextSocialPosts = nextSocialPosts.map((p) => {
+                if (p.id !== postNeedingReply.id) return p;
+                return {
+                  ...p,
+                  comments: p.comments.map((c) =>
+                    c.id === commentWaiting.id
+                      ? { ...c, replies: [...c.replies, autoReply] }
+                      : c
+                  ),
+                };
+              });
+              changed = true;
+            }
+          }
+
+          // Also add a follower-weighted comment to a post with < 3 comments
+          const postForComment = nextSocialPosts.find(
+            (p) => p.comments.length < 3
+          );
+          if (postForComment) {
+            const pickedCommenter = pickWeightedCommenterZoi(
+              postForComment.authorId,
+              nextCharacters,
+              postForComment.comments.map((c) => c.authorId)
+            );
+            if (pickedCommenter) {
+              const autoComment = generateAutonomousZoiComment(
+                pickedCommenter.zoi,
+                postForComment
+              );
+              nextSocialPosts = nextSocialPosts.map((p) =>
+                p.id === postForComment.id
+                  ? {
+                      ...p,
+                      likesCount: p.likesCount + 1,
+                      comments: [...p.comments, autoComment],
+                    }
+                  : p
+              );
+              changed = true;
+            }
+          }
+        }
+
+        // 4. Keep Community Hub feed updated with ambient city dispatches
+        if (nextFeedEvents.length === 0 || Math.random() < 0.5) {
+          const cityEvent = createFallbackInzoiEvent(
+            nextCharacters,
+            prev.locations
+          );
+          nextFeedEvents = [cityEvent, ...nextFeedEvents].slice(0, 80);
+          changed = true;
+        }
+
+        if (!changed) return prev;
+        return {
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          characters: nextCharacters,
+          feedEvents: nextFeedEvents,
+          socialPosts: nextSocialPosts,
+        };
+      });
+    }, 20_000);
+
+    return () => window.clearInterval(simulationTimer);
+  }, []);
 
   const handleGoogleLogin = async () => {
     setSyncError(null);
@@ -997,14 +1391,14 @@ export default function App() {
     });
   };
 
-  // Zoi CRUD handlers + Anonymous Community Hub Feed Dispatches
+  // Zoi CRUD handlers + Anonymous Community Hub Feed Dispatches + Initial Autonomous Social Activity
   const handleSaveCharacter = (
     savedChar: CharacterEntry,
     newPhotos: GalleryPhoto[] = []
   ) => {
     setArchive((prev) => {
       const exists = prev.characters.some((c) => c.id === savedChar.id);
-      const nextCharacters = exists
+      let nextCharacters = exists
         ? prev.characters.map((c) => (c.id === savedChar.id ? savedChar : c))
         : [...prev.characters, savedChar];
 
@@ -1030,12 +1424,68 @@ export default function App() {
         nextEvents.unshift(photoEvent);
       }
 
+      // If this Zoi is newly created and other Zois exist, give them a natural follow connection
+      if (!exists && nextCharacters.length >= 2) {
+        const evolved = evolveNaturalZoiFollow(nextCharacters, savedChar.id);
+        if (evolved) {
+          nextCharacters = evolved.updatedCharacters;
+          const followEvent = createAutonomousFollowFeedEvent(
+            evolved.follower,
+            evolved.target
+          );
+          nextEvents.unshift(followEvent);
+        }
+      }
+
+      // Ensure the Zoi's own profile page has an initial post if they have none yet
+      let nextSocialPosts = prev.socialPosts || [];
+      const hasOwnPost = nextSocialPosts.some(
+        (p) =>
+          p.pageEntityType === 'character' && p.pageEntityId === savedChar.id
+      );
+      if (!hasOwnPost) {
+        const currentSaved =
+          nextCharacters.find((c) => c.id === savedChar.id) || savedChar;
+        const starterPost = generateAutonomousZoiPost(
+          currentSaved,
+          nextCharacters,
+          prev.locations
+        );
+        // If another Zoi exists, also include a natural follower-weighted comment & author reply
+        if (nextCharacters.length >= 2) {
+          const picked = pickWeightedCommenterZoi(
+            starterPost.authorId,
+            nextCharacters
+          );
+          if (picked) {
+            const starterComment = generateAutonomousZoiComment(
+              picked.zoi,
+              starterPost
+            );
+            const starterReply = generateAutonomousZoiReply(
+              starterPost.authorName,
+              starterPost.authorType,
+              starterPost.authorId,
+              starterComment
+            );
+            starterPost.comments = [
+              {
+                ...starterComment,
+                replies: [starterReply],
+              },
+            ];
+          }
+        }
+        nextSocialPosts = [starterPost, ...nextSocialPosts];
+      }
+
       return {
         ...prev,
         updatedAt: new Date().toISOString(),
         characters: nextCharacters,
         photos: [...newPhotos, ...prev.photos],
         feedEvents: nextEvents.slice(0, 80),
+        socialPosts: nextSocialPosts,
       };
     });
     setRoute({ view: 'character_detail', id: savedChar.id });
@@ -1071,6 +1521,34 @@ export default function App() {
       backgroundDataUrl
         ? 'Updated individual Zoi page background.'
         : 'Reset Zoi page background to site default.'
+    );
+  };
+
+  const handleUpdateCharacterSocialBanner = (
+    characterId: string,
+    socialBannerDataUrl: string,
+    rawSocialBannerDataUrl?: string,
+    socialBannerCropConfig?: ImageCropConfig
+  ) => {
+    setArchive((prev) => ({
+      ...prev,
+      updatedAt: new Date().toISOString(),
+      characters: prev.characters.map((c) =>
+        c.id === characterId
+          ? {
+              ...c,
+              socialBannerDataUrl: socialBannerDataUrl || undefined,
+              rawSocialBannerDataUrl: rawSocialBannerDataUrl || undefined,
+              socialBannerCropConfig,
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      ),
+    }));
+    showTransientBanner(
+      socialBannerDataUrl
+        ? 'Updated Zoi social media profile banner.'
+        : 'Reset Zoi social media profile banner.'
     );
   };
 
@@ -1168,6 +1646,34 @@ export default function App() {
       backgroundDataUrl
         ? 'Updated individual location page background.'
         : 'Reset location page background to site default.'
+    );
+  };
+
+  const handleUpdateLocationSocialBanner = (
+    locationId: string,
+    socialBannerDataUrl: string,
+    rawSocialBannerDataUrl?: string,
+    socialBannerCropConfig?: ImageCropConfig
+  ) => {
+    setArchive((prev) => ({
+      ...prev,
+      updatedAt: new Date().toISOString(),
+      locations: prev.locations.map((l) =>
+        l.id === locationId
+          ? {
+              ...l,
+              socialBannerDataUrl: socialBannerDataUrl || undefined,
+              rawSocialBannerDataUrl: rawSocialBannerDataUrl || undefined,
+              socialBannerCropConfig,
+              updatedAt: new Date().toISOString(),
+            }
+          : l
+      ),
+    }));
+    showTransientBanner(
+      socialBannerDataUrl
+        ? 'Updated location social media profile banner.'
+        : 'Reset location social media profile banner.'
     );
   };
 
@@ -1519,6 +2025,7 @@ export default function App() {
             locations={archive.locations}
             photos={archive.photos}
             feedEvents={archive.feedEvents}
+            socialPosts={archive.socialPosts || []}
             autoHyperlinkNames={archive.settings.autoHyperlinkNames}
             showLinkPreviews={archive.settings.showLinkPreviews}
             isAuthenticated={isAuthenticated}
@@ -1573,6 +2080,8 @@ export default function App() {
             onEdit={(id) => setRoute({ view: 'character_edit', id })}
             onDeleteRequest={handleDeleteCharacterRequest}
             onUpdateCharacterBackground={handleUpdateCharacterBackground}
+            onUpdateCharacterSocialBanner={handleUpdateCharacterSocialBanner}
+            onTriggerNaturalFollow={handleTriggerNaturalFollow}
             onNavigate={handleNavigateEntity}
             onOpenPhotoUpload={(charId) =>
               setPhotoModalState({
@@ -1600,6 +2109,10 @@ export default function App() {
             characters={archive.characters}
             locations={archive.locations}
             existingPhotos={archive.photos}
+            aiCooldownRemainingSec={aiCooldownRemainingSec}
+            onAiCooldownStarted={(sec) =>
+              setAiCooldownUntilMs(Date.now() + sec * 1000)
+            }
             onSave={handleSaveCharacter}
             onCancel={() =>
               activeCharacter
@@ -1637,6 +2150,7 @@ export default function App() {
             onEdit={(id) => setRoute({ view: 'location_edit', id })}
             onDeleteRequest={handleDeleteLocationRequest}
             onUpdateLocationBackground={handleUpdateLocationBackground}
+            onUpdateLocationSocialBanner={handleUpdateLocationSocialBanner}
             onNavigate={handleNavigateEntity}
             onOpenPhotoUpload={(locId) =>
               setPhotoModalState({
@@ -1664,6 +2178,10 @@ export default function App() {
             characters={archive.characters}
             locations={archive.locations}
             existingPhotos={archive.photos}
+            aiCooldownRemainingSec={aiCooldownRemainingSec}
+            onAiCooldownStarted={(sec) =>
+              setAiCooldownUntilMs(Date.now() + sec * 1000)
+            }
             onSave={handleSaveLocation}
             onCancel={() =>
               activeLocation

@@ -1,6 +1,8 @@
 import {
   ActiveRoute,
+  BusinessStaffMember,
   CharacterEntry,
+  CharacterSortOption,
   CityFeedEvent,
   CodexArchive,
   CodexSettings,
@@ -10,8 +12,14 @@ import {
   LOCATION_CATEGORIES,
   LocationCategoryType,
   LocationEntry,
+  LocationSortOption,
   RelationshipStatusType,
+  SocialCommentReply,
   SocialMediaPost,
+  SocialPostComment,
+  ZOI_AGE_OPTIONS,
+  ZOI_PERSONALITY_TRAIT_GROUPS,
+  ZoiPersonalityTraitCategory,
 } from '../types/codex';
 
 export const DEFAULT_SETTINGS: CodexSettings = {
@@ -37,6 +45,140 @@ export function formatSocialHandle(name: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return `@${cleaned || 'zoi_resident'}`;
+}
+
+/**
+ * Formats a Zoi's Age stage ('Child' | 'Teenager' | 'Young Adult' | 'Adult' | 'Elder' | 'Ageless')
+ * with an optional exact numbered age (e.g. "Young Adult (24)" or "Young Adult").
+ */
+export function formatZoiAge(stage: string, exactAge?: string): string {
+  const cleanStage = (stage || '').trim();
+  const cleanExact = (exactAge || '').replace(/[^0-9+]/g, '').trim();
+
+  if (cleanStage && cleanExact) {
+    return `${cleanStage} (${cleanExact})`;
+  }
+  if (cleanStage) {
+    return cleanStage;
+  }
+  if (cleanExact) {
+    return cleanExact;
+  }
+  return '';
+}
+
+/**
+ * Parses a stored Zoi `age` string into `{ stage, exactAge }` for the 6-stage dropdown + optional number input.
+ * Gracefully migrates legacy values like "Child (6–12)", "Teenager (13–17)", or standalone numbers like "24".
+ */
+export function parseZoiAge(rawAge?: string): {
+  stage: string;
+  exactAge: string;
+} {
+  const trimmed = (rawAge || '').trim();
+  if (!trimmed) {
+    return { stage: '', exactAge: '' };
+  }
+
+  // Handle legacy range labels from earlier archives
+  if (/^child\s*\(6[–-]12\)$/i.test(trimmed)) {
+    return { stage: 'Child', exactAge: '' };
+  }
+  if (/^teenager\s*\(13[–-]17\)$/i.test(trimmed)) {
+    return { stage: 'Teenager', exactAge: '' };
+  }
+
+  // Match "Stage (24)" or "Stage - 24"
+  const stageWithNumMatch = trimmed.match(
+    /^(Child|Teenager|Young Adult|Adult|Elder|Ageless)\s*(?:\(([0-9+]+)\)|[-·]\s*([0-9+]+))?$/i
+  );
+  if (stageWithNumMatch) {
+    const matchedStage =
+      ZOI_AGE_OPTIONS.find(
+        (opt) => opt.toLowerCase() === stageWithNumMatch[1].toLowerCase()
+      ) || stageWithNumMatch[1];
+    const numPart = (stageWithNumMatch[2] || stageWithNumMatch[3] || '').trim();
+    return {
+      stage: matchedStage,
+      exactAge: numPart,
+    };
+  }
+
+  // If rawAge is a standalone number like "24" or "75+"
+  if (/^[0-9+]+$/.test(trimmed)) {
+    const numericVal = parseInt(trimmed, 10);
+    let inferredStage = 'Young Adult';
+    if (!Number.isNaN(numericVal)) {
+      if (numericVal <= 12) inferredStage = 'Child';
+      else if (numericVal <= 17) inferredStage = 'Teenager';
+      else if (numericVal <= 29) inferredStage = 'Young Adult';
+      else if (numericVal <= 59) inferredStage = 'Adult';
+      else inferredStage = 'Elder';
+    }
+    return {
+      stage: inferredStage,
+      exactAge: trimmed,
+    };
+  }
+
+  return {
+    stage: trimmed,
+    exactAge: '',
+  };
+}
+
+/**
+ * Parses a Zoi's stored personality string into an array of unique trait tags.
+ */
+export function parsePersonalityTraits(rawPersonality?: string): string[] {
+  if (!rawPersonality) return [];
+  const parts = rawPersonality
+    .split(/[,·;|]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const key = part.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(part);
+    }
+  }
+  return unique;
+}
+
+/**
+ * Serializes an array of selected personality trait tags into a clean comma-separated string.
+ */
+export function serializePersonalityTraits(traits: string[]): string {
+  return parsePersonalityTraits(traits.join(', ')).join(', ');
+}
+
+/**
+ * Resolves the category metadata for a given personality trait tag.
+ */
+export function getPersonalityTraitMeta(trait: string): {
+  category: ZoiPersonalityTraitCategory | 'custom';
+  label: string;
+  badgeClass: string;
+} {
+  const lower = trait.trim().toLowerCase();
+  for (const group of ZOI_PERSONALITY_TRAIT_GROUPS) {
+    if (group.traits.some((t) => t.toLowerCase() === lower)) {
+      return {
+        category: group.id,
+        label: group.label,
+        badgeClass: group.badgeClass,
+      };
+    }
+  }
+  return {
+    category: 'custom',
+    label: 'Custom Trait',
+    badgeClass: 'border-white/[0.18] bg-white/[0.06] text-[#E2E8F0]',
+  };
 }
 
 /**
@@ -217,7 +359,7 @@ export function resolveActivePageBackground(
  */
 export function createEmptyArchive(): CodexArchive {
   return {
-    version: 4,
+    version: 5,
     updatedAt: new Date().toISOString(),
     characters: [],
     locations: [],
@@ -476,6 +618,22 @@ function collectLocationSearchableStrings(
     { label: 'Ruler / Faction', text: loc.rulerOrFaction || '' },
     { label: 'Summary', text: loc.summary || '' },
   ];
+
+  if (loc.category === 'Business lot') {
+    if (loc.businessOwner) {
+      fields.push({
+        label: 'Business Owner',
+        text: loc.businessOwner,
+      });
+    }
+    for (const staff of loc.businessStaff || []) {
+      fields.push({
+        label: `Business Staff (${staff.role || 'Staff'})`,
+        text: `${staff.name} ${staff.role} ${staff.shiftOrNotes || ''}`,
+      });
+    }
+  }
+
   for (const attr of loc.attributes) {
     fields.push({ label: attr.label || 'Attribute', text: attr.value });
   }
@@ -1025,6 +1183,7 @@ export function calculateCropDrawParams(
 /**
  * Validates and normalizes an archive payload loaded from Google Drive or JSON import,
  * including migrating legacy `species` to `gender`, normalizing `status` to `'Alive'`,
+ * normalizing `age` stage + exact age, normalizing `businessOwner` & `businessStaff`,
  * enforcing `'encyclopedia'` as the main profile layout, and normalizing `socialPosts`.
  */
 export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
@@ -1079,6 +1238,20 @@ export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
         ch.relationships ||
         '';
 
+      const parsedAge = parseZoiAge(ch.age);
+      const normalizedAge = formatZoiAge(parsedAge.stage, parsedAge.exactAge);
+
+      const followingIds = Array.isArray(ch.followingIds)
+        ? Array.from(
+            new Set(
+              ch.followingIds.filter(
+                (id): id is string =>
+                  typeof id === 'string' && id.trim().length > 0 && id !== ch.id
+              )
+            )
+          )
+        : [];
+
       return {
         id: ch.id!,
         name: ch.name || 'Unnamed Zoi',
@@ -1086,7 +1259,7 @@ export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
         role: ch.role || '',
         gender: ch.gender ?? ch.species ?? '',
         pronouns: ch.pronouns || '',
-        age: ch.age || '',
+        age: normalizedAge || ch.age || '',
         birthdate: ch.birthdate || '',
         height: ch.height || '',
         occupation: ch.occupation || '',
@@ -1100,12 +1273,16 @@ export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
         status: normalizedStatus,
         originLocation: ch.originLocation || '',
         summary: ch.summary || '',
+        followingIds,
         portraitDataUrl: ch.portraitDataUrl || '',
         rawPortraitDataUrl: ch.rawPortraitDataUrl,
         cropConfig: ch.cropConfig,
         backgroundDataUrl: ch.backgroundDataUrl || '',
         rawBackgroundDataUrl: ch.rawBackgroundDataUrl,
         backgroundCropConfig: ch.backgroundCropConfig,
+        socialBannerDataUrl: ch.socialBannerDataUrl || '',
+        rawSocialBannerDataUrl: ch.rawSocialBannerDataUrl,
+        socialBannerCropConfig: ch.socialBannerCropConfig,
         profileDesign: 'encyclopedia',
         personalAttributes: Array.isArray(ch.personalAttributes)
           ? ch.personalAttributes
@@ -1126,22 +1303,55 @@ export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
     )
     .map((l) => {
       const loc = l as Partial<LocationEntry>;
+      const category = normalizeLocationCategory(loc.category);
+      const businessOwner =
+        category === 'Business lot' && typeof loc.businessOwner === 'string'
+          ? loc.businessOwner.trim()
+          : undefined;
+      const businessStaff: BusinessStaffMember[] | undefined =
+        category === 'Business lot' && Array.isArray(loc.businessStaff)
+          ? loc.businessStaff
+              .filter(
+                (s) =>
+                  s &&
+                  typeof s === 'object' &&
+                  typeof (s as BusinessStaffMember).name === 'string'
+              )
+              .map((s, idx) => ({
+                id:
+                  typeof s.id === 'string' && s.id
+                    ? s.id
+                    : `staff-${Date.now()}-${idx}`,
+                name: (s.name || '').trim(),
+                role: (s.role || '').trim(),
+                shiftOrNotes:
+                  typeof s.shiftOrNotes === 'string'
+                    ? s.shiftOrNotes.trim()
+                    : undefined,
+              }))
+          : undefined;
+
       return {
         id: loc.id!,
         name: loc.name || 'Unnamed Location',
         subtitle: loc.subtitle || '',
-        category: normalizeLocationCategory(loc.category),
+        category,
         region: loc.region || '',
         climate: loc.climate || '',
         rulerOrFaction: loc.rulerOrFaction || '',
         eraOrCoordinates: loc.eraOrCoordinates || '',
         summary: loc.summary || '',
+        businessOwner,
+        businessStaff,
         imageDataUrl: loc.imageDataUrl || '',
         rawImageDataUrl: loc.rawImageDataUrl,
         cropConfig: loc.cropConfig,
         backgroundDataUrl: loc.backgroundDataUrl || '',
         rawBackgroundDataUrl: loc.rawBackgroundDataUrl,
         backgroundCropConfig: loc.backgroundCropConfig,
+        socialBannerDataUrl: loc.socialBannerDataUrl || '',
+        rawSocialBannerDataUrl: loc.rawSocialBannerDataUrl,
+        socialBannerCropConfig: loc.socialBannerCropConfig,
         attributes: Array.isArray(loc.attributes) ? loc.attributes : [],
         sections: Array.isArray(loc.sections) ? loc.sections : [],
         createdAt: loc.createdAt || new Date().toISOString(),
@@ -1227,7 +1437,7 @@ export function validateAndNormalizeArchive(raw: unknown): CodexArchive {
       : DEFAULT_SETTINGS.siteBackgroundOverlayOpacity;
 
   return {
-    version: 4,
+    version: 5,
     updatedAt:
       typeof obj.updatedAt === 'string'
         ? obj.updatedAt
@@ -1307,6 +1517,10 @@ export function compactArchiveForStorage(
         ? undefined
         : c.backgroundDataUrl,
       rawBackgroundDataUrl: undefined,
+      socialBannerDataUrl: isOversizedDataUrl(c.socialBannerDataUrl)
+        ? undefined
+        : c.socialBannerDataUrl,
+      rawSocialBannerDataUrl: undefined,
     })),
     locations: archive.locations.map((l) => ({
       ...l,
@@ -1316,6 +1530,10 @@ export function compactArchiveForStorage(
         ? undefined
         : l.backgroundDataUrl,
       rawBackgroundDataUrl: undefined,
+      socialBannerDataUrl: isOversizedDataUrl(l.socialBannerDataUrl)
+        ? undefined
+        : l.socialBannerDataUrl,
+      rawSocialBannerDataUrl: undefined,
     })),
     photos: stripAllLargeDataUrls
       ? []
@@ -1343,5 +1561,544 @@ export function compactArchiveForStorage(
         : archive.settings.defaultSiteBackgroundUrl,
       rawDefaultSiteBackgroundUrl: undefined,
     },
+  };
+}
+
+/**
+ * Returns all Zois who follow `targetZoiId` on ZoiNet.
+ */
+export function getFollowersForZoi(
+  targetZoiId: string,
+  characters: CharacterEntry[]
+): CharacterEntry[] {
+  return characters.filter(
+    (c) =>
+      c.id !== targetZoiId &&
+      Array.isArray(c.followingIds) &&
+      c.followingIds.includes(targetZoiId)
+  );
+}
+
+/**
+ * Returns all Zois that `zoi` is currently following on ZoiNet.
+ */
+export function getFollowingForZoi(
+  zoi: CharacterEntry,
+  characters: CharacterEntry[]
+): CharacterEntry[] {
+  const ids = new Set(zoi.followingIds || []);
+  return characters.filter((c) => c.id !== zoi.id && ids.has(c.id));
+}
+
+function getAgeSortScore(rawAge: string): number {
+  const { stage, exactAge } = parseZoiAge(rawAge);
+  const stageRanks: Record<string, number> = {
+    Child: 100,
+    Teenager: 200,
+    'Young Adult': 300,
+    Adult: 400,
+    Elder: 500,
+    Ageless: 600,
+  };
+  const baseRank = stageRanks[stage] ?? 900;
+  const numericExact = parseInt(exactAge, 10);
+  return baseRank + (Number.isNaN(numericExact) ? 50 : numericExact);
+}
+
+/**
+ * Sorts Zoi entries for the Zoi Directory page:
+ * - PRIMARY PARTITION RULE: Entries WITHOUT an uploaded profile image (`portraitDataUrl`)
+ *   are ALWAYS moved to the bottom of the list.
+ * - SECONDARY SORT RULE: Within each group, sorts by the selected `CharacterSortOption`.
+ */
+export function sortCharactersForDirectory(
+  characters: CharacterEntry[],
+  sortBy: CharacterSortOption = 'recent'
+): CharacterEntry[] {
+  const followerCounts = new Map<string, number>();
+  for (const c of characters) {
+    followerCounts.set(c.id, 0);
+  }
+  for (const c of characters) {
+    for (const targetId of c.followingIds || []) {
+      followerCounts.set(targetId, (followerCounts.get(targetId) || 0) + 1);
+    }
+  }
+
+  return [...characters].sort((a, b) => {
+    const aHasImage = Boolean(a.portraitDataUrl && a.portraitDataUrl.trim());
+    const bHasImage = Boolean(b.portraitDataUrl && b.portraitDataUrl.trim());
+    if (aHasImage !== bHasImage) {
+      return aHasImage ? -1 : 1;
+    }
+
+    switch (sortBy) {
+      case 'name_asc':
+        return a.name.localeCompare(b.name);
+      case 'name_desc':
+        return b.name.localeCompare(a.name);
+      case 'created_desc':
+        return (
+          (b.createdAt || '').localeCompare(a.createdAt || '') ||
+          a.name.localeCompare(b.name)
+        );
+      case 'age_asc':
+        return (
+          getAgeSortScore(a.age) - getAgeSortScore(b.age) ||
+          a.name.localeCompare(b.name)
+        );
+      case 'affiliation_asc': {
+        const affA = (a.affiliation || '').trim() || 'zzzz';
+        const affB = (b.affiliation || '').trim() || 'zzzz';
+        return affA.localeCompare(affB) || a.name.localeCompare(b.name);
+      }
+      case 'followers_desc': {
+        const fA = followerCounts.get(a.id) || 0;
+        const fB = followerCounts.get(b.id) || 0;
+        return fB - fA || a.name.localeCompare(b.name);
+      }
+      case 'recent':
+      default:
+        return (
+          (b.updatedAt || b.createdAt || '').localeCompare(
+            a.updatedAt || a.createdAt || ''
+          ) || a.name.localeCompare(b.name)
+        );
+    }
+  });
+}
+
+/**
+ * Sorts Location entries for the Location Directory page:
+ * - PRIMARY PARTITION RULE: Entries WITHOUT an uploaded profile/cover image (`imageDataUrl`)
+ *   are ALWAYS moved to the bottom of the list.
+ * - SECONDARY SORT RULE: Within each group, sorts by the selected `LocationSortOption`.
+ */
+export function sortLocationsForDirectory(
+  locations: LocationEntry[],
+  sortBy: LocationSortOption = 'recent'
+): LocationEntry[] {
+  return [...locations].sort((a, b) => {
+    const aHasImage = Boolean(a.imageDataUrl && a.imageDataUrl.trim());
+    const bHasImage = Boolean(b.imageDataUrl && b.imageDataUrl.trim());
+    if (aHasImage !== bHasImage) {
+      return aHasImage ? -1 : 1;
+    }
+
+    switch (sortBy) {
+      case 'name_asc':
+        return a.name.localeCompare(b.name);
+      case 'name_desc':
+        return b.name.localeCompare(a.name);
+      case 'created_desc':
+        return (
+          (b.createdAt || '').localeCompare(a.createdAt || '') ||
+          a.name.localeCompare(b.name)
+        );
+      case 'category_asc':
+        return (
+          a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
+        );
+      case 'region_asc': {
+        const regA = (a.region || '').trim() || 'zzzz';
+        const regB = (b.region || '').trim() || 'zzzz';
+        return regA.localeCompare(regB) || a.name.localeCompare(b.name);
+      }
+      case 'recent':
+      default:
+        return (
+          (b.updatedAt || b.createdAt || '').localeCompare(
+            a.updatedAt || a.createdAt || ''
+          ) || a.name.localeCompare(b.name)
+        );
+    }
+  });
+}
+
+/**
+ * Computes social affinity weight between two Zois for natural following & social interaction.
+ */
+export function calculateFollowAffinityWeight(
+  sourceZoi: CharacterEntry,
+  targetZoi: CharacterEntry
+): number {
+  if (sourceZoi.id === targetZoi.id) return 0;
+  let weight = 1.0;
+
+  const cleanPartner = (sourceZoi.relationshipPartner || '')
+    .replace(/^\[\[|\]\]$/g, '')
+    .trim()
+    .toLowerCase();
+  if (cleanPartner && cleanPartner === targetZoi.name.trim().toLowerCase()) {
+    weight += 4.0;
+  }
+
+  if (
+    sourceZoi.affiliation &&
+    targetZoi.affiliation &&
+    sourceZoi.affiliation.trim().toLowerCase() ===
+      targetZoi.affiliation.trim().toLowerCase()
+  ) {
+    weight += 1.8;
+  }
+
+  if (
+    sourceZoi.originLocation &&
+    targetZoi.originLocation &&
+    sourceZoi.originLocation
+      .replace(/^\[\[|\]\]$/g, '')
+      .trim()
+      .toLowerCase() ===
+      targetZoi.originLocation
+        .replace(/^\[\[|\]\]$/g, '')
+        .trim()
+        .toLowerCase()
+  ) {
+    weight += 1.5;
+  }
+
+  const sourceTraits = new Set(
+    parsePersonalityTraits(sourceZoi.personality).map((t) => t.toLowerCase())
+  );
+  const targetTraits = parsePersonalityTraits(targetZoi.personality).map((t) =>
+    t.toLowerCase()
+  );
+  for (const t of targetTraits) {
+    if (sourceTraits.has(t)) {
+      weight += 1.1;
+    }
+  }
+
+  // Mutual follow-back boost
+  if ((targetZoi.followingIds || []).includes(sourceZoi.id)) {
+    weight += 2.2;
+  }
+
+  return weight;
+}
+
+/**
+ * Naturally gives a Zoi a chance to start following another Zoi on ZoiNet.
+ * Returns the updated characters list along with the follower and target Zoi if a new follow occurred.
+ */
+export function evolveNaturalZoiFollow(
+  characters: CharacterEntry[],
+  preferredZoiId?: string
+): {
+  updatedCharacters: CharacterEntry[];
+  follower: CharacterEntry;
+  target: CharacterEntry;
+} | null {
+  if (characters.length < 2) return null;
+
+  const candidates: Array<{
+    follower: CharacterEntry;
+    target: CharacterEntry;
+    weight: number;
+  }> = [];
+
+  for (const follower of characters) {
+    const existingFollows = new Set(follower.followingIds || []);
+    for (const target of characters) {
+      if (follower.id === target.id) continue;
+      if (existingFollows.has(target.id)) continue;
+
+      let weight = calculateFollowAffinityWeight(follower, target);
+      if (
+        preferredZoiId &&
+        (follower.id === preferredZoiId || target.id === preferredZoiId)
+      ) {
+        weight *= 3.0;
+      }
+      candidates.push({ follower, target, weight });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  const totalWeight = candidates.reduce((acc, c) => acc + c.weight, 0);
+  let roll = Math.random() * totalWeight;
+  let chosen = candidates[0];
+  for (const item of candidates) {
+    roll -= item.weight;
+    if (roll <= 0) {
+      chosen = item;
+      break;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const updatedCharacters = characters.map((c) => {
+    if (c.id !== chosen.follower.id) return c;
+    const nextFollowing = Array.from(
+      new Set([...(c.followingIds || []), chosen.target.id])
+    );
+    return {
+      ...c,
+      followingIds: nextFollowing,
+      updatedAt: now,
+    };
+  });
+
+  const updatedFollower =
+    updatedCharacters.find((c) => c.id === chosen.follower.id) ||
+    chosen.follower;
+
+  return {
+    updatedCharacters,
+    follower: updatedFollower,
+    target: chosen.target,
+  };
+}
+
+/**
+ * Selects another Zoi to comment on a post, giving a 3.5x probability boost
+ * to Zois who follow the post author (and an extra 1.5x boost for mutual followers).
+ */
+export function pickWeightedCommenterZoi(
+  postAuthorId: string,
+  characters: CharacterEntry[],
+  excludeCommenterIds: string[] = []
+): { zoi: CharacterEntry; isFollower: boolean; weight: number } | null {
+  const otherZois = characters.filter((c) => c.id !== postAuthorId);
+  if (otherZois.length === 0) return null;
+
+  const pool =
+    otherZois.filter((c) => !excludeCommenterIds.includes(c.id)).length > 0
+      ? otherZois.filter((c) => !excludeCommenterIds.includes(c.id))
+      : otherZois;
+
+  const postAuthor = characters.find((c) => c.id === postAuthorId);
+
+  const weightedPool = pool.map((zoi) => {
+    const isFollower = (zoi.followingIds || []).includes(postAuthorId);
+    const isFollowedByAuthor = Boolean(
+      postAuthor && (postAuthor.followingIds || []).includes(zoi.id)
+    );
+    let weight = 1.0;
+    if (isFollower) {
+      // Following someone strongly increases the chance of commenting on their posts
+      weight *= 3.5;
+    }
+    if (isFollowedByAuthor) {
+      weight *= 1.5;
+    }
+    if (postAuthor) {
+      weight +=
+        (calculateFollowAffinityWeight(zoi, postAuthor) - 1.0) * 0.35;
+    }
+    return { zoi, isFollower, weight };
+  });
+
+  const totalWeight = weightedPool.reduce((acc, item) => acc + item.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const item of weightedPool) {
+    roll -= item.weight;
+    if (roll <= 0) {
+      return item;
+    }
+  }
+  return weightedPool[0];
+}
+
+/**
+ * Picks another Zoi for `author` to mention/post about on their social feed,
+ * giving a 4x higher chance to Zois that `author` follows.
+ */
+export function pickFollowedZoiForMention(
+  author: CharacterEntry,
+  characters: CharacterEntry[]
+): CharacterEntry | null {
+  const others = characters.filter((c) => c.id !== author.id);
+  if (others.length === 0) return null;
+
+  const followingSet = new Set(author.followingIds || []);
+  const weighted = others.map((target) => ({
+    target,
+    weight: followingSet.has(target.id) ? 4.0 : 1.0,
+  }));
+
+  const totalWeight = weighted.reduce((acc, w) => acc + w.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const item of weighted) {
+    roll -= item.weight;
+    if (roll <= 0) {
+      return item.target;
+    }
+  }
+  return weighted[0].target;
+}
+
+/**
+ * Generates an autonomous in-character social media post for a Zoi,
+ * with a boosted probability of posting about a Zoi they follow or a city location.
+ */
+export function generateAutonomousZoiPost(
+  author: CharacterEntry,
+  characters: CharacterEntry[],
+  locations: LocationEntry[]
+): SocialMediaPost {
+  const followingZois = getFollowingForZoi(author, characters);
+  const mentionedZoi =
+    followingZois.length > 0 && Math.random() < 0.72
+      ? followingZois[Math.floor(Math.random() * followingZois.length)]
+      : Math.random() < 0.45
+        ? pickFollowedZoiForMention(author, characters)
+        : null;
+
+  const cleanOrigin = (author.originLocation || '')
+    .replace(/^\[\[|\]\]$/g, '')
+    .trim();
+  const matchedLoc =
+    locations.find(
+      (l) => l.name.toLowerCase() === cleanOrigin.toLowerCase()
+    ) ||
+    (locations.length > 0
+      ? locations[Math.floor(Math.random() * locations.length)]
+      : undefined);
+
+  const locTag = matchedLoc
+    ? `[[${matchedLoc.name}]]`
+    : cleanOrigin
+      ? `[[${cleanOrigin}]]`
+      : 'the central promenade';
+  const roleDesc = author.occupation || author.role || 'city resident';
+  const traits = parsePersonalityTraits(author.personality);
+  const primaryTrait = traits[0] || 'observant';
+
+  const templatesWithFollowedZoi = mentionedZoi
+    ? [
+        `Just caught up with [[${mentionedZoi.name}]] near ${locTag}! Always love seeing what they're working on lately. #ZoiNet #CityLife`,
+        `Saw [[${mentionedZoi.name}]]'s latest update and had to shout them out — best energy around ${locTag} today. ✨ #ZoiNet`,
+        `Grabbing an iced espresso at ${locTag} before meeting up with [[${mentionedZoi.name}]]. Being a ${roleDesc} never slows down! #inZOI`,
+        `Honestly glad I started following [[${mentionedZoi.name}]] on here. Running into them around ${locTag} always makes the evening better.`,
+      ]
+    : [];
+
+  const soloTemplates = [
+    `Wrapping up another shift as ${roleDesc} near ${locTag}. The city lights hit different when you're feeling ${primaryTrait.toLowerCase()}. #ZoiNet`,
+    `Taking a quiet walk through ${locTag} to clear my head and focus on my next goal${author.ambition ? `: ${author.ambition.toLowerCase()}` : ''}. #CityVibes`,
+    `Late-afternoon breeze rolling across ${locTag}. Anyone else out and about this evening? #ZoiNet`,
+    `Between ${roleDesc} duties and life in ${locTag}, today actually turned out pretty unforgettable. #inZOI`,
+  ];
+
+  const pool =
+    templatesWithFollowedZoi.length > 0
+      ? [...templatesWithFollowedZoi, ...templatesWithFollowedZoi, ...soloTemplates]
+      : soloTemplates;
+  const content = pool[Math.floor(Math.random() * pool.length)];
+
+  return {
+    id: `post-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    pageEntityType: 'character',
+    pageEntityId: author.id,
+    authorType: 'character',
+    authorId: author.id,
+    authorName: author.name,
+    authorHandle: formatSocialHandle(author.name),
+    content,
+    likesCount: Math.floor(Math.random() * 6) + 1,
+    repostsCount: Math.floor(Math.random() * 2),
+    isAiGenerated: true,
+    comments: [],
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Generates an automatic in-character comment from `commenter` on `post`.
+ */
+export function generateAutonomousZoiComment(
+  commenter: CharacterEntry,
+  post: SocialMediaPost
+): SocialPostComment {
+  const isFollowingAuthor = (commenter.followingIds || []).includes(
+    post.authorId
+  );
+  const authorLink = `[[${post.authorName}]]`;
+  const traits = parsePersonalityTraits(commenter.personality);
+  const traitFlavor = traits[0] ? ` (${traits[0]})` : '';
+
+  const followerTemplates = [
+    `Glad I follow your feed ${authorLink}! Always love seeing your updates pop up on my timeline.`,
+    `Couldn't agree more, ${authorLink}! Let's catch up soon next time we're in the same district.`,
+    `Every time ${authorLink} posts, it's a highlight on my ZoiNet feed. Keep shining!`,
+    `Wait for me ${authorLink}! I'm heading over that way right now${traitFlavor}.`,
+  ];
+
+  const generalTemplates = [
+    `Spotted this on the city feed — hope your day is going great, ${authorLink}!`,
+    `That vibe is unmatched, ${authorLink}. Might swing by later this evening!`,
+    `Classic ${authorLink}! The whole neighborhood has been talking about this.`,
+    `Love this update ${authorLink} — definitely keeping an eye on what happens next.`,
+  ];
+
+  const templates = isFollowingAuthor
+    ? [...followerTemplates, ...generalTemplates]
+    : generalTemplates;
+
+  return {
+    id: `comment-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    postId: post.id,
+    authorType: 'character',
+    authorId: commenter.id,
+    authorName: commenter.name,
+    authorHandle: formatSocialHandle(commenter.name),
+    content: templates[Math.floor(Math.random() * templates.length)],
+    likesCount: Math.floor(Math.random() * 3) + 1,
+    isAiGenerated: true,
+    replies: [],
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Generates an automatic in-character reply from the post author to a comment left on their post.
+ */
+export function generateAutonomousZoiReply(
+  postAuthorName: string,
+  postAuthorType: 'character' | 'location',
+  postAuthorId: string,
+  comment: SocialPostComment
+): SocialCommentReply {
+  const commenterLink = `[[${comment.authorName}]]`;
+  const templates = [
+    `Thanks so much ${commenterLink}! Let's definitely link up soon.`,
+    `Always appreciate hearing from you, ${commenterLink}! 🙌`,
+    `Haha you know me too well, ${commenterLink}! See you around the district.`,
+    `Means a lot coming from you, ${commenterLink}! Coffee is on me next time.`,
+  ];
+
+  return {
+    id: `reply-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    authorType: postAuthorType,
+    authorId: postAuthorId,
+    authorName: postAuthorName,
+    authorHandle: formatSocialHandle(postAuthorName),
+    content: templates[Math.floor(Math.random() * templates.length)],
+    likesCount: Math.floor(Math.random() * 2) + 1,
+    isAiGenerated: true,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Creates a Community Hub feed event when a Zoi naturally starts following another Zoi.
+ */
+export function createAutonomousFollowFeedEvent(
+  follower: CharacterEntry,
+  target: CharacterEntry
+): CityFeedEvent {
+  return {
+    id: `feed-follow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    kind: 'ai_inzoi',
+    category: 'ZoiNet Connection',
+    headline: `${follower.name} Started Following ${target.name} on ZoiNet`,
+    body: `Social circles in the city continue to evolve — [[${follower.name}]] (${formatSocialHandle(follower.name)}) is now following [[${target.name}]] (${formatSocialHandle(target.name)}), increasing their chances of commenting and posting together.`,
+    districtOrMood: 'Social Network',
+    relatedEntityType: 'character',
+    relatedEntityId: follower.id,
+    imageUrl: follower.portraitDataUrl || target.portraitDataUrl || undefined,
+    createdAt: new Date().toISOString(),
   };
 }

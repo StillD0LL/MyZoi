@@ -21,6 +21,7 @@ import { AiSocialGenerationParams, SocialFeedView } from './SocialFeedView';
 import {
   ArrowLeft,
   BookOpen,
+  Briefcase,
   Camera,
   Edit3,
   Image as ImageIcon,
@@ -49,6 +50,12 @@ interface LocationProfileViewProps {
     backgroundDataUrl: string,
     rawBackgroundDataUrl?: string,
     backgroundCropConfig?: ImageCropConfig
+  ) => void;
+  onUpdateLocationSocialBanner: (
+    locationId: string,
+    socialBannerDataUrl: string,
+    rawSocialBannerDataUrl?: string,
+    socialBannerCropConfig?: ImageCropConfig
   ) => void;
   onOpenPhotoUpload: (locationId: string) => void;
   onUpdatePhoto: (photo: GalleryPhoto) => void;
@@ -87,6 +94,7 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
   onEdit,
   onDeleteRequest,
   onUpdateLocationBackground,
+  onUpdateLocationSocialBanner,
   onOpenPhotoUpload,
   onUpdatePhoto,
   onDeletePhotoRequest,
@@ -122,11 +130,25 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
     [location.id, socialPosts]
   );
 
+  const isBusinessLot = location.category === 'Business lot';
+  const businessStaffList = useMemo(
+    () =>
+      isBusinessLot && Array.isArray(location.businessStaff)
+        ? location.businessStaff.filter(
+            (s) => s.name.trim() || s.role.trim() || s.shiftOrNotes?.trim()
+          )
+        : [],
+    [isBusinessLot, location.businessStaff]
+  );
+
   const coreLocationRows = useMemo(() => {
     const base = [
       { label: 'Location / Lot Type', value: location.category },
       { label: 'Region / District', value: location.region },
       { label: 'Climate / Atmosphere', value: location.climate },
+      ...(isBusinessLot && location.businessOwner?.trim()
+        ? [{ label: 'Business Owner', value: location.businessOwner }]
+        : []),
       { label: 'Key Figures / Faction', value: location.rulerOrFaction },
       { label: 'Era / Coordinates', value: location.eraOrCoordinates },
     ].filter((r) => r.value && r.value.trim().length > 0);
@@ -136,7 +158,7 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
       .map((a) => ({ label: a.label, value: a.value }));
 
     return [...base, ...custom];
-  }, [location]);
+  }, [isBusinessLot, location]);
 
   return (
     <div className="space-y-6">
@@ -276,7 +298,16 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
           onAddReply={onAddSocialReply}
           onDeleteReply={onDeleteSocialReply}
           onTriggerAiSocial={onTriggerAiSocial}
+          onUpdateSocialBanner={(bannerUrl, rawBannerUrl, bannerCfg) =>
+            onUpdateLocationSocialBanner(
+              location.id,
+              bannerUrl,
+              rawBannerUrl,
+              bannerCfg
+            )
+          }
           onNavigate={onNavigate}
+          onOpenDossier={() => setActiveProfileView('dossier')}
         />
       ) : (
         /* Main Two-Column Encyclopedia Layout for Location */
@@ -325,6 +356,100 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
               )}
             </header>
 
+            {/* STRICTLY FOR BUSINESS LOTS: Unique Business Owner & Staff Roster Section */}
+            {isBusinessLot &&
+              (location.businessOwner?.trim() ||
+                businessStaffList.length > 0) && (
+                <section
+                  aria-label="Business Owner and Staff Roster"
+                  className="border border-[#2DD4BF]/35 bg-[#2DD4BF]/[0.05] p-5 space-y-4"
+                >
+                  <div className="flex items-center justify-between border-b border-white/[0.10] pb-3">
+                    <div className="flex items-center gap-2">
+                      <Briefcase className="h-4 w-4 text-[#2DD4BF]" />
+                      <h2 className="font-display text-base font-bold text-[#F8FAFC]">
+                        Business Owner &amp; Staff Roster
+                      </h2>
+                    </div>
+                    <span className="text-[11px] font-mono-tabular text-[#2DD4BF]">
+                      COMMERCIAL LOT DIRECTORY
+                    </span>
+                  </div>
+
+                  {location.businessOwner?.trim() && (
+                    <div className="border border-white/[0.10] bg-black/55 p-3.5 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#94A3B8]">
+                          Proprietor / Business Owner
+                        </div>
+                        <div className="mt-0.5 text-sm font-semibold text-white">
+                          <HyperlinkedText
+                            text={location.businessOwner}
+                            characters={characters}
+                            locations={locations}
+                            autoHyperlinkNames={autoHyperlinkNames}
+                            showLinkPreviews={showLinkPreviews}
+                            excludeEntityId={location.id}
+                            onNavigate={onNavigate}
+                          />
+                        </div>
+                      </div>
+                      <span className="border border-[#2DD4BF]/40 bg-[#2DD4BF]/15 px-2.5 py-0.5 text-[11px] font-semibold text-[#5EEAD4]">
+                        Owner
+                      </span>
+                    </div>
+                  )}
+
+                  {businessStaffList.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="text-xs font-semibold text-[#CBD5E1]">
+                        Active Staff &amp; Employees ({businessStaffList.length})
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {businessStaffList.map((staff) => (
+                          <div
+                            key={staff.id}
+                            className="border border-white/[0.10] bg-black/55 p-3 space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-semibold text-white">
+                                <HyperlinkedText
+                                  text={staff.name || 'Staff Member'}
+                                  characters={characters}
+                                  locations={locations}
+                                  autoHyperlinkNames={autoHyperlinkNames}
+                                  showLinkPreviews={showLinkPreviews}
+                                  excludeEntityId={location.id}
+                                  onNavigate={onNavigate}
+                                />
+                              </span>
+                              {staff.role && (
+                                <span className="text-[11px] font-mono-tabular text-[#2DD4BF]">
+                                  {staff.role}
+                                </span>
+                              )}
+                            </div>
+                            {staff.shiftOrNotes && (
+                              <p className="text-[11px] text-[#94A3B8]">
+                                <HyperlinkedText
+                                  text={staff.shiftOrNotes}
+                                  characters={characters}
+                                  locations={locations}
+                                  autoHyperlinkNames={autoHyperlinkNames}
+                                  showLinkPreviews={showLinkPreviews}
+                                  excludeEntityId={location.id}
+                                  onNavigate={onNavigate}
+                                />
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
             {/* Modular Sections */}
             <div className="space-y-8">
               {location.sections.map((sec, idx) => (
@@ -359,7 +484,7 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
             {/* Notable Zois & Linked Entries */}
             <div className="mt-10 border-t border-white/[0.10] pt-6">
               <h3 className="font-display text-sm font-semibold text-white mb-3 flex items-center gap-2">
-                <Link2 className="h-4 w-4 text-[#2DD4BF]" />
+                <Link2 className="h-4 w-4 text-[#38BDF8]" />
                 <span>
                   Associated Zois &amp; Linked Entries ({backlinks.length})
                 </span>
@@ -369,7 +494,7 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
                   No Zois or other locations reference {location.name} yet. Set
                   a Zoi&apos;s Primary Location to{' '}
                   <strong className="text-white">{location.name}</strong> or use{' '}
-                  <code className="font-mono-tabular text-[#2DD4BF]">
+                  <code className="font-mono-tabular text-[#38BDF8]">
                     [[{location.name}]]
                   </code>{' '}
                   in any section to link them here.
@@ -383,16 +508,16 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
                       onClick={() =>
                         onNavigate(item.sourceType, item.sourceId)
                       }
-                      className="flex items-start justify-between inzoi-glass-card p-3.5 text-left hover:border-[#2DD4BF] transition-all group"
+                      className="flex items-start justify-between inzoi-glass-card p-3.5 text-left hover:border-[#38BDF8] transition-all group"
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           {item.sourceType === 'character' ? (
-                            <User className="h-3.5 w-3.5 text-[#2DD4BF] shrink-0" />
+                            <User className="h-3.5 w-3.5 text-[#38BDF8] shrink-0" />
                           ) : (
-                            <MapPin className="h-3.5 w-3.5 text-[#2DD4BF] shrink-0" />
+                            <MapPin className="h-3.5 w-3.5 text-[#38BDF8] shrink-0" />
                           )}
-                          <span className="font-display text-sm font-semibold text-white group-hover:text-[#2DD4BF] truncate">
+                          <span className="font-display text-sm font-semibold text-[#38BDF8] group-hover:text-[#60A5FA] underline decoration-[#38BDF8]/50 truncate">
                             {item.sourceName}
                           </span>
                         </div>
@@ -513,3 +638,4 @@ export const LocationProfileView: React.FC<LocationProfileViewProps> = ({
     </div>
   );
 };
+

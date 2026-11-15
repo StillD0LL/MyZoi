@@ -58,48 +58,129 @@ export const ZOI_BIRTH_MONTH_OPTIONS = [
   'December',
 ] as const;
 
-export const ZOI_AGE_OPTIONS = [
-  'Child (6–12)',
-  'Teenager (13–17)',
-  '18',
-  '19',
-  '20',
-  '21',
-  '22',
-  '23',
-  '24',
-  '25',
-  '26',
-  '27',
-  '28',
-  '29',
-  '30',
-  '31',
-  '32',
-  '33',
-  '34',
-  '35',
-  '36',
-  '37',
-  '38',
-  '39',
-  '40',
-  '41',
-  '42',
-  '43',
-  '44',
-  '45',
-  '46',
-  '47',
-  '48',
-  '49',
-  '50',
-  '55',
-  '60',
-  '65',
-  '70',
-  '75+',
+export type ZoiAgeStageType =
+  | 'Child'
+  | 'Teenager'
+  | 'Young Adult'
+  | 'Adult'
+  | 'Elder'
+  | 'Ageless';
+
+export const ZOI_AGE_OPTIONS: readonly ZoiAgeStageType[] = [
+  'Child',
+  'Teenager',
+  'Young Adult',
+  'Adult',
+  'Elder',
   'Ageless',
+] as const;
+
+export type ZoiPersonalityTraitCategory =
+  | 'positive'
+  | 'negative'
+  | 'innocent'
+  | 'suggestive';
+
+export interface ZoiPersonalityTraitGroup {
+  id: ZoiPersonalityTraitCategory;
+  label: string;
+  subtitle: string;
+  badgeClass: string;
+  activeClass: string;
+  traits: readonly string[];
+}
+
+export const ZOI_PERSONALITY_TRAIT_GROUPS: readonly ZoiPersonalityTraitGroup[] = [
+  {
+    id: 'positive',
+    label: 'inZOI Positive Traits',
+    subtitle: 'Constructive, prosocial, and aspirational life-sim traits',
+    badgeClass: 'border-[#2DD4BF]/40 bg-[#2DD4BF]/10 text-[#2DD4BF]',
+    activeClass: 'border-[#2DD4BF] bg-[#2DD4BF] text-[#050608] font-semibold',
+    traits: [
+      'Volunteer',
+      'Socialite',
+      'Perfectionist',
+      'Adventurer',
+      'Caregiver',
+      'Mediator',
+      'Entertainer',
+      'Leader',
+      'Explorer',
+      'Scholar',
+      'Charismatic',
+      'Creative Visionary',
+      'Empathetic Listener',
+      'Loyal Companion',
+    ],
+  },
+  {
+    id: 'negative',
+    label: 'inZOI Negative Traits',
+    subtitle: 'Flawed, volatile, or challenging interpersonal traits',
+    badgeClass: 'border-[#F43F5E]/40 bg-[#F43F5E]/10 text-[#FDA4AF]',
+    activeClass: 'border-[#F43F5E] bg-[#F43F5E] text-white font-semibold',
+    traits: [
+      'Authoritarian',
+      'Recluse',
+      'Individualist',
+      'Hot-Headed',
+      'Workaholic',
+      'Jealous',
+      'Gossip Hound',
+      'Overthinker',
+      'Materialistic',
+      'Impulsive',
+      'Cynical',
+      'Vain',
+      'Rebellious',
+      'Commitment-Phobic',
+    ],
+  },
+  {
+    id: 'innocent',
+    label: 'Innocent & Wholesome (Teen–Adult)',
+    subtitle: 'Sweet, earnest, shy, and heartfelt traits across youth & adulthood',
+    badgeClass: 'border-[#38BDF8]/40 bg-[#38BDF8]/10 text-[#7DD3FC]',
+    activeClass: 'border-[#38BDF8] bg-[#38BDF8] text-[#050608] font-semibold',
+    traits: [
+      'Hopeless Romantic',
+      'Shy Daydreamer',
+      'First Crush Jitters',
+      'Bookworm',
+      'Soft-Hearted',
+      'Cozy Homebody',
+      'Animal Lover',
+      'Naive Optimist',
+      'Secret Poet',
+      'Stargazer',
+      'Sweet Tooth',
+      'Awkwardly Charming',
+    ],
+  },
+  {
+    id: 'suggestive',
+    label: 'Suggestive & Mature (Teen–Adult)',
+    subtitle: 'Alluring, flirtatious, intense, and after-hours romantic traits',
+    badgeClass: 'border-[#C084FC]/40 bg-[#C084FC]/10 text-[#E9D5FF]',
+    activeClass: 'border-[#C084FC] bg-[#C084FC] text-[#050608] font-semibold',
+    traits: [
+      'Shameless Flirt',
+      'Heartbreaker',
+      'Tease',
+      'Seductive Charm',
+      'Nightlife Magnet',
+      'Thrill-Seeking Romantic',
+      'Magnetic Gaze',
+      'Secretly Passionate',
+      'Forbidden Romance Seeker',
+      'Alluring & Mysterious',
+      'Wild Child',
+      'Irresistible Temptation',
+      'After-Hours Socialite',
+      'Possessive Lover',
+    ],
+  },
 ] as const;
 
 export const ZOI_HEIGHT_OPTIONS = [
@@ -161,6 +242,16 @@ export interface ProfileSection {
   items?: KeyValueItem[];
   /** Used by 'bullets' and 'trivia' */
   bullets?: BulletItem[];
+}
+
+export interface BusinessStaffMember {
+  id: string;
+  /** Zoi name or [[Zoi Name]] */
+  name: string;
+  /** Job title or role at the business */
+  role: string;
+  /** Optional schedule, shift, or specialty notes */
+  shiftOrNotes?: string;
 }
 
 export interface ImageCropConfig {
@@ -249,6 +340,23 @@ export interface SocialMediaPost {
   createdAt: string;
 }
 
+export type CharacterSortOption =
+  | 'recent'
+  | 'created_desc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'age_asc'
+  | 'affiliation_asc'
+  | 'followers_desc';
+
+export type LocationSortOption =
+  | 'recent'
+  | 'created_desc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'category_asc'
+  | 'region_asc';
+
 export interface CharacterEntry {
   id: string;
   name: string;
@@ -259,11 +367,13 @@ export interface CharacterEntry {
   /** Legacy fallback field if loaded from older archive */
   species?: string;
   pronouns: string;
+  /** Formatted age stage + optional exact numbered age, e.g. "Young Adult (24)" or "Young Adult" */
   age: string;
   /** Birth Month selection */
   birthdate: string;
   height: string;
   occupation: string;
+  /** Comma-separated multi-select personality traits */
   personality: string;
   ambition: string;
   /** Household status: Single or Family */
@@ -280,6 +390,8 @@ export interface CharacterEntry {
   /** Optional ID or Name of primary Location entry */
   originLocation: string;
   summary: string;
+  /** IDs of other Zois that this Zoi naturally follows on their social media page */
+  followingIds?: string[];
   /** Full portrait image (cropped data URL) used for selection grid & profile */
   portraitDataUrl: string;
   /** Raw source image data URL if user re-opens cropper */
@@ -289,6 +401,10 @@ export interface CharacterEntry {
   backgroundDataUrl?: string;
   rawBackgroundDataUrl?: string;
   backgroundCropConfig?: ImageCropConfig;
+  /** Optional separate social media profile banner image for this Zoi's X-style feed */
+  socialBannerDataUrl?: string;
+  rawSocialBannerDataUrl?: string;
+  socialBannerCropConfig?: ImageCropConfig;
   /** Main and only layout: Encyclopedia Dossier ('encyclopedia') */
   profileDesign: ProfileDesignType;
   /** Quick personal info rows in the primary header/sidebar */
@@ -310,6 +426,10 @@ export interface LocationEntry {
   rulerOrFaction: string;
   eraOrCoordinates: string;
   summary: string;
+  /** Strictly for Business lot: Business Owner Zoi name or [[Zoi Name]] */
+  businessOwner?: string;
+  /** Strictly for Business lot: Staff roster with roles and shifts */
+  businessStaff?: BusinessStaffMember[];
   /** Cover / portrait image for the location */
   imageDataUrl: string;
   rawImageDataUrl?: string;
@@ -318,6 +438,10 @@ export interface LocationEntry {
   backgroundDataUrl?: string;
   rawBackgroundDataUrl?: string;
   backgroundCropConfig?: ImageCropConfig;
+  /** Optional separate social media profile banner image for this location's X-style feed */
+  socialBannerDataUrl?: string;
+  rawSocialBannerDataUrl?: string;
+  socialBannerCropConfig?: ImageCropConfig;
   /** Quick status attributes for the location */
   attributes: KeyValueItem[];
   /** Modular sections (Wikipedia quick status, paragraphs, bullets, quotes, trivia) */
